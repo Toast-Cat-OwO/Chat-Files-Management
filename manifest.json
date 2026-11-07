@@ -1,0 +1,11 @@
+{
+  "display_name": "存档管家 (Chat Vault)",
+  "loading_order": 15,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "CustomDev",
+  "version": "1.0.0",
+  "homePage": "https://github.com/SillyTavern/SillyTavern"
+}
