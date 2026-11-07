@@ -1,0 +1,42 @@
+<div class="chat-vault-settings">
+  <div class="inline-drawer">
+    <div class="inline-drawer-toggle inline-drawer-header">
+      <b>🗂️ 存档管家 (Chat Vault)</b>
+      <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+    </div>
+    <div class="inline-drawer-content">
+      <div class="cv-setting-row">
+        <label class="checkbox_label">
+          <input type="checkbox" id="cv_enable_fab" />
+          <span>开启桌面悬浮球（长按快捷切档 / 拖拽贴边）</span>
+        </label>
+      </div>
+
+      <div class="cv-setting-row">
+        <label for="cv_theme_mode">界面主题风格：</label>
+        <select id="cv_theme_mode" class="text_pole">
+          <option value="inherit">🔗 跟随酒馆美化主题（默认推荐）</option>
+          <option value="dark">🌙 纯粹暗黑毛玻璃</option>
+          <option value="light">☀️ 纯粹浅色毛玻璃</option>
+        </select>
+      </div>
+
+      <div class="cv-setting-row">
+        <label for="cv_grid_cols">手机海报墙默认列数：</label>
+        <select id="cv_grid_cols" class="text_pole">
+          <option value="2">一行 2 个（立绘更清晰）</option>
+          <option value="3">一行 3 个（紧凑浏览）</option>
+        </select>
+      </div>
+
+      <div class="cv-setting-actions">
+        <div class="menu_button" id="cv_open_modal_btn">
+          <i class="fa-solid fa-folder-open"></i> 立即打开存档管家
+        </div>
+        <div class="menu_button" id="cv_rebuild_index_btn">
+          <i class="fa-solid fa-rotate"></i> 刷新全文搜索索引
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
