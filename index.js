@@ -14,7 +14,7 @@ const defaultSettings = {
     enableFab: true,
     themeMode: "inherit", // inherit | dark | light
     gridCols: 2,          // 2 | 3
-    fabPos: { top: "70%", left: "calc(100% - 56px)", dock: "right" },
+    fabPos: { top: "68%", left: "calc(100% - 58px)", dock: "right" },
     notes: {},
     pinned: [],
     chatCounts: {},
@@ -27,7 +27,383 @@ let selectedCharId = null;
 let currentFilter = "recent";
 
 /* =========================================================
-   1. 基础工具函数（全容错防崩溃）
+   0. 强制内嵌注入 CSS 样式（彻底解决 style.css 没加载或透明隐形问题）
+   ========================================================= */
+function injectMasterStyles() {
+    if (document.getElementById("cv-master-styles")) return;
+    const styleEl = document.createElement("style");
+    styleEl.id = "cv-master-styles";
+    styleEl.textContent = `
+      :root {
+        --cv-bg: rgba(22, 24, 32, 0.94);
+        --cv-blur: var(--SmartThemeBlurStrength, 16px);
+        --cv-text: var(--SmartThemeBodyColor, #f3f4f6);
+        --cv-em: var(--SmartThemeEmColor, #ffb86c);
+        --cv-accent: var(--SmartThemeQuoteColor, #7aa2f7);
+        --cv-border: var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.18));
+        --cv-card-bg: rgba(128, 128, 145, 0.18);
+        --cv-font: var(--mainFontFamily, -apple-system, BlinkMacSystemFont, sans-serif);
+      }
+      .cv-theme-dark {
+        --cv-bg: rgba(16, 17, 23, 0.96) !important;
+        --cv-text: #f3f4f6 !important;
+        --cv-em: #fbbf24 !important;
+        --cv-accent: #60a5fa !important;
+        --cv-border: rgba(255, 255, 255, 0.15) !important;
+        --cv-card-bg: rgba(255, 255, 255, 0.08) !important;
+      }
+      .cv-theme-light {
+        --cv-bg: rgba(246, 247, 251, 0.96) !important;
+        --cv-text: #1f2937 !important;
+        --cv-em: #d97706 !important;
+        --cv-accent: #2563eb !important;
+        --cv-border: rgba(0, 0, 0, 0.15) !important;
+        --cv-card-bg: rgba(0, 0, 0, 0.06) !important;
+      }
+      #cv-fab {
+        position: fixed !important;
+        z-index: 2147483640 !important;
+        width: 48px !important;
+        height: 48px !important;
+        border-radius: 50% !important;
+        background: rgba(24, 26, 36, 0.92) !important;
+        backdrop-filter: blur(12px) !important;
+        -webkit-backdrop-filter: blur(12px) !important;
+        border: 2px solid var(--cv-accent) !important;
+        color: #fff !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        font-size: 22px !important;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55) !important;
+        touch-action: none !important;
+        user-select: none !important;
+        -webkit-user-select: none !important;
+        cursor: pointer !important;
+        transition: opacity 0.3s ease, transform 0.2s ease;
+      }
+      #cv-fab.cv-idle { opacity: 0.42 !important; }
+      #cv-fab.cv-idle.cv-dock-left { transform: translateX(-12px); }
+      #cv-fab.cv-idle.cv-dock-right { transform: translateX(12px); }
+
+      #cv-modal-overlay, #cv-quick-sheet {
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        width: 100vw !important;
+        height: 100vh !important;
+        z-index: 2147483645 !important;
+        background: rgba(0, 0, 0, 0.65) !important;
+        display: flex !important;
+        align-items: flex-end !important;
+        justify-content: center !important;
+        font-family: var(--cv-font) !important;
+        color: var(--cv-text) !important;
+      }
+      @media (min-width: 768px) {
+        #cv-modal-overlay { align-items: center !important; }
+      }
+      .cv-modal-container {
+        width: 100% !important;
+        max-width: 680px !important;
+        height: 88vh !important;
+        background: var(--cv-bg) !important;
+        backdrop-filter: blur(var(--cv-blur)) !important;
+        -webkit-backdrop-filter: blur(var(--cv-blur)) !important;
+        border-top: 1.5px solid var(--cv-border) !important;
+        border-radius: 22px 22px 0 0 !important;
+        display: flex !important;
+        flex-direction: column !important;
+        overflow: hidden !important;
+        box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.6) !important;
+      }
+      .cv-quick-box {
+        width: 100% !important;
+        max-width: 520px !important;
+        max-height: 72vh !important;
+        background: var(--cv-bg) !important;
+        backdrop-filter: blur(var(--cv-blur)) !important;
+        -webkit-backdrop-filter: blur(var(--cv-blur)) !important;
+        border-top: 1.5px solid var(--cv-border) !important;
+        border-radius: 20px 20px 0 0 !important;
+        padding: 16px !important;
+        color: var(--cv-text) !important;
+        overflow-y: auto !important;
+      }
+      .cv-quick-item {
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: var(--cv-card-bg);
+        border: 1px solid var(--cv-border);
+        margin-bottom: 8px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        cursor: pointer;
+      }
+      .cv-header {
+        padding: 12px 14px 8px;
+        border-bottom: 1px solid var(--cv-border);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .cv-top-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
+      }
+      .cv-title {
+        font-size: 16px;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .cv-search-wrap {
+        display: flex;
+        align-items: center;
+        background: var(--cv-card-bg);
+        border: 1px solid var(--cv-border);
+        border-radius: 12px;
+        padding: 4px 10px;
+        gap: 6px;
+      }
+      .cv-search-wrap input {
+        flex: 1;
+        background: transparent !important;
+        border: none !important;
+        color: var(--cv-text) !important;
+        font-size: 14px !important;
+        outline: none !important;
+        padding: 6px 0 !important;
+      }
+      .cv-filter-row {
+        display: flex;
+        gap: 6px;
+        overflow-x: auto;
+        padding-bottom: 4px;
+        scrollbar-width: none;
+      }
+      .cv-filter-row::-webkit-scrollbar { display: none; }
+      .cv-pill {
+        padding: 5px 11px;
+        border-radius: 999px;
+        font-size: 12px;
+        white-space: nowrap;
+        background: var(--cv-card-bg);
+        border: 1px solid var(--cv-border);
+        color: var(--cv-text);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .cv-pill.active {
+        background: var(--cv-accent) !important;
+        color: #fff !important;
+        border-color: transparent !important;
+        font-weight: 600;
+      }
+      .cv-body {
+        flex: 1;
+        overflow-y: auto;
+        padding: 12px 14px 32px;
+        -webkit-overflow-scrolling: touch;
+      }
+      .cv-pinned-bar { margin-bottom: 14px; }
+      .cv-section-label {
+        font-size: 12px;
+        opacity: 0.8;
+        margin-bottom: 6px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .cv-pinned-list {
+        display: flex;
+        gap: 8px;
+        overflow-x: auto;
+        padding-bottom: 4px;
+      }
+      .cv-pin-chip {
+        flex-shrink: 0;
+        max-width: 200px;
+        padding: 7px 10px;
+        border-radius: 12px;
+        background: var(--cv-card-bg);
+        border: 1px solid var(--cv-accent);
+        cursor: pointer;
+        font-size: 12px;
+      }
+      .cv-pin-chip-title {
+        font-weight: 700;
+        color: var(--cv-em);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .cv-pin-chip-sub {
+        opacity: 0.8;
+        font-size: 11px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .cv-char-grid { display: grid; gap: 12px; }
+      .cv-char-grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .cv-char-grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .cv-char-card {
+        position: relative;
+        aspect-ratio: 3 / 4.2;
+        border-radius: 14px;
+        overflow: hidden;
+        border: 1px solid var(--cv-border);
+        background: #222533;
+        cursor: pointer;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+      }
+      .cv-char-card img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .cv-char-badge {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        background: rgba(0, 0, 0, 0.72);
+        color: #fff;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 3px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,0.2);
+      }
+      .cv-char-footer {
+        position: absolute;
+        left: 0; right: 0; bottom: 0;
+        padding: 22px 10px 8px;
+        background: linear-gradient(to top, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.6) 65%, transparent 100%);
+        color: #fff;
+      }
+      .cv-char-name {
+        font-size: 14px;
+        font-weight: 700;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .cv-char-time { font-size: 11px; opacity: 0.8; margin-top: 2px; }
+      .cv-detail-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 12px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid var(--cv-border);
+      }
+      .cv-detail-avatar {
+        width: 48px;
+        height: 48px;
+        border-radius: 12px;
+        object-fit: cover;
+        border: 1px solid var(--cv-accent);
+      }
+      .cv-slot-card {
+        background: var(--cv-card-bg);
+        border: 1px solid var(--cv-border);
+        border-radius: 14px;
+        padding: 12px;
+        margin-bottom: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .cv-slot-card.current-slot {
+        border: 1.5px solid var(--cv-accent);
+      }
+      .cv-slot-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 8px;
+        cursor: pointer;
+      }
+      .cv-slot-title { font-weight: 700; font-size: 14px; word-break: break-all; }
+      .cv-slot-note-tag {
+        display: inline-block;
+        background: var(--cv-accent);
+        color: #fff;
+        font-size: 11px;
+        padding: 2px 7px;
+        border-radius: 6px;
+        margin-right: 6px;
+        font-weight: 600;
+      }
+      .cv-slot-meta { font-size: 11px; opacity: 0.78; display: flex; flex-wrap: wrap; gap: 8px; }
+      .cv-slot-preview {
+        font-size: 12.5px;
+        opacity: 0.9;
+        background: rgba(0, 0, 0, 0.25);
+        padding: 8px 10px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .cv-slot-actions {
+        display: flex;
+        gap: 6px;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        padding-top: 6px;
+        border-top: 1px dashed var(--cv-border);
+      }
+      .cv-btn-sm {
+        padding: 5px 10px;
+        border-radius: 8px;
+        font-size: 12px;
+        background: rgba(128, 128, 140, 0.22);
+        border: 1px solid var(--cv-border);
+        color: var(--cv-text);
+        cursor: pointer;
+      }
+      .cv-btn-sm.primary { background: var(--cv-accent); color: #fff; border-color: transparent; }
+      .cv-btn-sm.danger { color: #f87171; }
+      .cv-search-hit {
+        background: var(--cv-card-bg);
+        border: 1px solid var(--cv-border);
+        border-radius: 12px;
+        padding: 10px 12px;
+        margin-bottom: 8px;
+        cursor: pointer;
+      }
+      .cv-hit-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 12px;
+        margin-bottom: 4px;
+        color: var(--cv-em);
+        font-weight: 600;
+      }
+      .cv-hit-snippet { font-size: 13px; line-height: 1.45; word-break: break-word; }
+      .cv-highlight-kw { background: #facc15; color: #000; font-weight: 700; padding: 0 3px; border-radius: 3px; }
+      @keyframes cvFlashMessage {
+        0%, 100% { box-shadow: none; }
+        25%, 75% { box-shadow: 0 0 0 3px var(--cv-accent), 0 0 18px var(--cv-accent); }
+      }
+      .cv-target-message-flash { animation: cvFlashMessage 2.4s ease-in-out; border-radius: 10px; }
+    `;
+    document.head.appendChild(styleEl);
+}
+
+/* =========================================================
+   1. 基础工具函数
    ========================================================= */
 function getSettings() {
     extension_settings[EXT_NAME] = extension_settings[EXT_NAME] || {};
@@ -44,9 +420,7 @@ function saveSettings() {
         if (ctx && typeof ctx.saveSettingsDebounced === "function") {
             ctx.saveSettingsDebounced();
         }
-    } catch (e) {
-        console.warn("[ChatVault] saveSettings error:", e);
-    }
+    } catch (e) {}
 }
 
 function stripFileExt(fileName = "") {
@@ -65,7 +439,6 @@ function escapeHtml(str = "") {
         .replace(/"/g, "&quot;");
 }
 
-// 安全获取角色头像地址（彻底避免 getThumbnailUrl 报错导致打不开弹窗）
 function getSafeAvatarUrl(avatarFile) {
     if (!avatarFile || avatarFile === "none") return "/img/ai4.png";
     return `/thumbnail?type=avatar&file=${encodeURIComponent(avatarFile)}`;
@@ -218,130 +591,119 @@ function scrollToMessageFloor(mesId) {
 }
 
 /* =========================================================
-   4. 手机/电脑全兼容悬浮球（原生 Click + 拖拽分离，100% 触发）
+   4. 手机/电脑全兼容悬浮球（PointerEvent 统一驱动，零冲突）
    ========================================================= */
 function initFloatingBall() {
-    $("#cv-fab").remove();
+    injectMasterStyles();
+    const oldFab = document.getElementById("cv-fab");
+    if (oldFab) oldFab.remove();
+
     const settings = getSettings();
     syncFabToggleUI();
 
     if (!settings.enableFab) return;
 
-    const $fab = $(`<div id="cv-fab" role="button" tabindex="0">🗂️</div>`);
-    $fab.css({
-        position: "fixed",
-        zIndex: "2147483640",
-        top: settings.fabPos.top || "70%",
-        left: settings.fabPos.left || "calc(100% - 56px)",
-        pointerEvents: "auto",
-    });
-    $fab.addClass(settings.fabPos.dock === "left" ? "cv-dock-left" : "cv-dock-right");
+    const fabEl = document.createElement("div");
+    fabEl.id = "cv-fab";
+    fabEl.innerHTML = "🗂️";
+    fabEl.style.top = settings.fabPos.top || "68%";
+    fabEl.style.left = settings.fabPos.left || "calc(100% - 58px)";
+    fabEl.className = settings.fabPos.dock === "left" ? "cv-dock-left" : "cv-dock-right";
 
-    $("body").append($fab);
+    document.body.appendChild(fabEl);
 
     let idleTimer = null;
     const resetIdle = () => {
-        $fab.removeClass("cv-idle");
+        fabEl.classList.remove("cv-idle");
         clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => $fab.addClass("cv-idle"), 3200);
+        idleTimer = setTimeout(() => fabEl.classList.add("cv-idle"), 3200);
     };
     resetIdle();
 
-    const fabEl = $fab[0];
-    let isDragging = false;
-    let dragMoved = false;
+    let isDown = false;
+    let hasMoved = false;
+    let longPressed = false;
     let startX = 0, startY = 0;
-    let initialLeft = 0, initialTop = 0;
-    let longPressTimer = null;
-    let longPressOpened = false;
+    let startLeft = 0, startTop = 0;
+    let lpTimer = null;
 
-    // 1. 最可靠的原生 click 监听（手机轻触必触发）
-    fabEl.addEventListener("click", (e) => {
-        e.stopPropagation();
+    fabEl.addEventListener("pointerdown", (e) => {
         resetIdle();
-        if (dragMoved || longPressOpened) {
-            dragMoved = false;
-            longPressOpened = false;
-            return;
-        }
-        openMainModal();
-    });
-
-    // 2. 触摸拖拽与长按支持（绝不调用 preventDefault 阻塞 click）
-    fabEl.addEventListener("touchstart", (e) => {
-        resetIdle();
-        const t = e.touches[0];
-        if (!t) return;
-        isDragging = true;
-        dragMoved = false;
-        longPressOpened = false;
-        startX = t.clientX;
-        startY = t.clientY;
+        isDown = true;
+        hasMoved = false;
+        longPressed = false;
+        startX = e.clientX;
+        startY = e.clientY;
         const rect = fabEl.getBoundingClientRect();
-        initialLeft = rect.left;
-        initialTop = rect.top;
+        startLeft = rect.left;
+        startTop = rect.top;
 
-        clearTimeout(longPressTimer);
-        longPressTimer = setTimeout(() => {
-            if (isDragging && !dragMoved) {
-                longPressOpened = true;
-                isDragging = false;
+        try { fabEl.setPointerCapture(e.pointerId); } catch (_) {}
+
+        clearTimeout(lpTimer);
+        lpTimer = setTimeout(() => {
+            if (isDown && !hasMoved) {
+                longPressed = true;
+                isDown = false;
                 openQuickSwitchSheet();
             }
-        }, 650);
-    }, { passive: true });
+        }, 620);
+    });
 
-    fabEl.addEventListener("touchmove", (e) => {
-        if (!isDragging) return;
-        const t = e.touches[0];
-        if (!t) return;
-        const dx = t.clientX - startX;
-        const dy = t.clientY - startY;
-
-        if (Math.abs(dx) > 15 || Math.abs(dy) > 15) {
-            dragMoved = true;
-            clearTimeout(longPressTimer);
-            const newLeft = Math.max(6, Math.min(window.innerWidth - 52, initialLeft + dx));
-            const newTop = Math.max(10, Math.min(window.innerHeight - 56, initialTop + dy));
-            $fab.css({ left: `${newLeft}px`, top: `${newTop}px`, transition: "none" });
+    fabEl.addEventListener("pointermove", (e) => {
+        if (!isDown) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        if (Math.abs(dx) > 12 || Math.abs(dy) > 12) {
+            hasMoved = true;
+            clearTimeout(lpTimer);
+            const newLeft = Math.max(6, Math.min(window.innerWidth - 54, startLeft + dx));
+            const newTop = Math.max(10, Math.min(window.innerHeight - 56, startTop + dy));
+            fabEl.style.transition = "none";
+            fabEl.style.left = `${newLeft}px`;
+            fabEl.style.top = `${newTop}px`;
         }
-    }, { passive: true });
+    });
 
-    fabEl.addEventListener("touchend", () => {
-        clearTimeout(longPressTimer);
-        if (!isDragging) return;
-        isDragging = false;
-        $fab.css({ transition: "opacity 0.35s ease, transform 0.25s ease" });
+    fabEl.addEventListener("pointerup", (e) => {
+        clearTimeout(lpTimer);
+        if (!isDown) return;
+        isDown = false;
+        try { fabEl.releasePointerCapture(e.pointerId); } catch (_) {}
+        fabEl.style.transition = "opacity 0.3s ease, transform 0.2s ease";
 
-        if (dragMoved) {
+        if (hasMoved) {
             const rect = fabEl.getBoundingClientRect();
             const isLeft = rect.left + rect.width / 2 < window.innerWidth / 2;
-            const dockLeft = isLeft ? "8px" : `${window.innerWidth - 54}px`;
+            const dockLeft = isLeft ? "8px" : `${window.innerWidth - 56}px`;
             const dockSide = isLeft ? "left" : "right";
 
-            $fab.removeClass("cv-dock-left cv-dock-right").addClass(`cv-dock-${dockSide}`);
-            $fab.css({ left: dockLeft, top: `${rect.top}px` });
+            fabEl.classList.remove("cv-dock-left", "cv-dock-right");
+            fabEl.classList.add(`cv-dock-${dockSide}`);
+            fabEl.style.left = dockLeft;
+            fabEl.style.top = `${rect.top}px`;
 
             settings.fabPos = { top: `${rect.top}px`, left: dockLeft, dock: dockSide };
             saveSettings();
-            // 延迟复位 dragMoved，避免紧随其后的 click 误触发
-            setTimeout(() => { dragMoved = false; }, 250);
+        } else if (!longPressed) {
+            openMainModal();
         }
         resetIdle();
-    }, { passive: true });
+    });
 }
 
 /* =========================================================
    5. 长按悬浮球：快捷切档菜单
    ========================================================= */
 async function openQuickSwitchSheet() {
+    injectMasterStyles();
     $("#cv-quick-sheet").remove();
     const ctx = getContext();
     const chid = ctx.characterId;
     const char = ctx.characters?.[chid];
 
     const $sheet = $(`
-        <div id="cv-quick-sheet" style="z-index:2147483645;">
+        <div id="cv-quick-sheet">
           <div class="cv-quick-box">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
               <b>⚡ 快捷切档 ${char ? `- ${escapeHtml(char.name)}` : ""}</b>
@@ -399,7 +761,7 @@ async function openQuickSwitchSheet() {
 }
 
 /* =========================================================
-   6. 主弹窗渲染与视图切换（先挂载显示，再安全渲染内容）
+   6. 主弹窗渲染与视图切换（强制顶层显示）
    ========================================================= */
 function applyThemeClass($el) {
     const mode = getSettings().themeMode;
@@ -410,12 +772,15 @@ function applyThemeClass($el) {
 
 async function openMainModal() {
     try {
-        $("#cv-modal-overlay").remove();
+        injectMasterStyles();
+        const existing = document.getElementById("cv-modal-overlay");
+        if (existing) existing.remove();
+
         const settings = getSettings();
         currentView = "grid";
 
         const $modal = $(`
-            <div id="cv-modal-overlay" style="z-index:2147483642;">
+            <div id="cv-modal-overlay">
               <div class="cv-modal-container">
                 <div class="cv-header">
                   <div class="cv-top-bar">
@@ -453,7 +818,7 @@ async function openMainModal() {
         `);
 
         applyThemeClass($modal);
-        $("body").append($modal);
+        document.body.appendChild($modal[0]);
 
         $modal.on("click", (e) => {
             if (e.target.id === "cv-modal-overlay") $modal.remove();
@@ -505,10 +870,14 @@ async function openMainModal() {
         renderCharacterGrid();
         refreshAllCharCountsBackground();
     } catch (err) {
-        console.error("[ChatVault] 打开弹窗异常:", err);
-        if (window.toastr) toastr.error("打开存档管家出错：" + err.message);
+        console.error("[ChatVault] openMainModal error:", err);
+        alert("打开存档管家出错：" + err.message);
     }
 }
+
+// 暴露全局函数，确保 HTML 内联 onclick 100% 触发
+window.cvOpenModal = openMainModal;
+window.cvRebuildIndex = () => buildFullTextIndex(true);
 
 /* =========================================================
    7. 一级视图：角色美化海报墙
@@ -596,7 +965,6 @@ function renderCharacterGrid() {
             renderCharacterSlots(Number($(this).data("chid")));
         });
     } catch (err) {
-        console.error("[ChatVault] renderCharacterGrid error:", err);
         $("#cv-body-content").html(`<div style="padding:20px;color:#f87171;">渲染角色列表出错：${escapeHtml(err.message)}</div>`);
     }
 }
@@ -999,15 +1367,14 @@ async function runEmptySlotCleaner() {
 }
 
 /* =========================================================
-   11. 插件启动入口（修复设置面板按钮竖排问题）
+   11. 插件启动入口
    ========================================================= */
 jQuery(() => {
+    injectMasterStyles();
     const settings = getSettings();
 
-    // 清理可能重复注入的旧面板
     $(".chat-vault-settings").remove();
 
-    // 采用独立横向按钮样式，彻底解决 .menu_button 导致文字竖排的问题
     const inlineSettingsHtml = `
       <div class="chat-vault-settings">
         <div class="inline-drawer">
@@ -1038,10 +1405,10 @@ jQuery(() => {
               </select>
             </div>
             <div style="display:flex;gap:10px;margin-top:12px;width:100%;">
-              <button type="button" id="cv_open_modal_btn" style="flex:1;white-space:nowrap;padding:9px 12px;border-radius:10px;border:1px solid var(--SmartThemeBorderColor,rgba(255,255,255,0.2));background:var(--SmartThemeQuoteColor,#7aa2f7);color:#fff;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
+              <button type="button" onclick="window.cvOpenModal && window.cvOpenModal()" style="flex:1;white-space:nowrap;padding:9px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.2);background:var(--SmartThemeQuoteColor,#7aa2f7);color:#fff;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
                 <i class="fa-solid fa-folder-open"></i> 立即打开存档管家
               </button>
-              <button type="button" id="cv_rebuild_index_btn" style="flex:1;white-space:nowrap;padding:9px 12px;border-radius:10px;border:1px solid var(--SmartThemeBorderColor,rgba(255,255,255,0.2));background:rgba(128,128,140,0.22);color:var(--SmartThemeBodyColor,#fff);font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
+              <button type="button" onclick="window.cvRebuildIndex && window.cvRebuildIndex()" style="flex:1;white-space:nowrap;padding:9px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.2);background:rgba(128,128,140,0.25);color:var(--SmartThemeBodyColor,#fff);font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
                 <i class="fa-solid fa-rotate"></i> 刷新全文搜索索引
               </button>
             </div>
@@ -1068,25 +1435,14 @@ jQuery(() => {
         saveSettings();
     });
 
-    $("#cv_open_modal_btn").on("click", (e) => {
-        e.preventDefault();
-        openMainModal();
-    });
-
-    $("#cv_rebuild_index_btn").on("click", (e) => {
-        e.preventDefault();
-        buildFullTextIndex(true);
-    });
-
     // 魔杖扩展菜单入口
     $("#cv-wand-entry").remove();
     const $wandItem = $(`
-        <div id="cv-wand-entry" class="list-group-item flex-container flexGap5 interactable">
+        <div id="cv-wand-entry" onclick="window.cvOpenModal && window.cvOpenModal()" class="list-group-item flex-container flexGap5 interactable">
           <i class="fa-solid fa-folder-tree"></i>
           <span>存档管家 (Chat Vault)</span>
         </div>
     `);
-    $wandItem.on("click", () => openMainModal());
     $("#extensionsMenu").append($wandItem);
 
     initFloatingBall();
