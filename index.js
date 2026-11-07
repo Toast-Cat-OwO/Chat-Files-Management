@@ -5,7 +5,6 @@ import {
     getRequestHeaders,
     selectCharacterById,
     openCharacterChat,
-    getThumbnailUrl,
     doNewChat,
 } from "../../../../script.js";
 
@@ -15,7 +14,7 @@ const defaultSettings = {
     enableFab: true,
     themeMode: "inherit", // inherit | dark | light
     gridCols: 2,          // 2 | 3
-    fabPos: { top: "70%", left: "calc(100% - 54px)", dock: "right" },
+    fabPos: { top: "70%", left: "calc(100% - 56px)", dock: "right" },
     notes: {},
     pinned: [],
     chatCounts: {},
@@ -28,7 +27,7 @@ let selectedCharId = null;
 let currentFilter = "recent";
 
 /* =========================================================
-   1. 初始化与设置存储
+   1. 基础工具函数（全容错防崩溃）
    ========================================================= */
 function getSettings() {
     extension_settings[EXT_NAME] = extension_settings[EXT_NAME] || {};
@@ -40,11 +39,18 @@ function getSettings() {
 }
 
 function saveSettings() {
-    getContext().saveSettingsDebounced();
+    try {
+        const ctx = getContext();
+        if (ctx && typeof ctx.saveSettingsDebounced === "function") {
+            ctx.saveSettingsDebounced();
+        }
+    } catch (e) {
+        console.warn("[ChatVault] saveSettings error:", e);
+    }
 }
 
 function stripFileExt(fileName = "") {
-    return String(fileName).replace(/\.jsonl$/i, "");
+    return String(fileName || "").replace(/\.jsonl$/i, "");
 }
 
 function getSlotKey(avatar, fileName) {
@@ -52,11 +58,17 @@ function getSlotKey(avatar, fileName) {
 }
 
 function escapeHtml(str = "") {
-    return String(str)
+    return String(str || "")
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;");
+}
+
+// 安全获取角色头像地址（彻底避免 getThumbnailUrl 报错导致打不开弹窗）
+function getSafeAvatarUrl(avatarFile) {
+    if (!avatarFile || avatarFile === "none") return "/img/ai4.png";
+    return `/thumbnail?type=avatar&file=${encodeURIComponent(avatarFile)}`;
 }
 
 function syncFabToggleUI() {
@@ -82,7 +94,6 @@ async function fetchCharacterChats(avatarUrl) {
         saveSettings();
         return list;
     } catch (e) {
-        console.error("[ChatVault] 获取角色档位失败:", e);
         return [];
     }
 }
@@ -171,14 +182,14 @@ async function switchAndLocate(chid, fileName, targetMesId = null) {
     const cleanFile = stripFileExt(fileName);
 
     $("#cv-modal-overlay, #cv-quick-sheet").remove();
-    toastr.info(`正在切换至档位：${cleanFile}...`);
+    if (window.toastr) toastr.info(`正在切换至档位：${cleanFile}...`);
 
     if (String(ctx.characterId) !== String(chid)) {
         await selectCharacterById(String(chid));
-        await new Promise((r) => setTimeout(r, 350));
+        await new Promise((r) => setTimeout(r, 380));
     }
 
-    const currentChatFile = stripFileExt(ctx.characters[chid]?.chat || "");
+    const currentChatFile = stripFileExt(ctx.characters?.[chid]?.chat || "");
     if (currentChatFile !== cleanFile) {
         await openCharacterChat(cleanFile);
         await new Promise((r) => setTimeout(r, 450));
@@ -201,13 +212,13 @@ function scrollToMessageFloor(mesId) {
             setTimeout(() => $msg.removeClass("cv-target-message-flash"), 2600);
         } else if (attempts >= 12) {
             clearInterval(timer);
-            toastr.warning(`已进入档位，目标在第 #${mesId} 楼（如楼层较早请向上滑动加载）`);
+            if (window.toastr) toastr.warning(`已进入档位，目标在第 #${mesId} 楼（如楼层较早请向上滑动加载）`);
         }
     }, 250);
 }
 
 /* =========================================================
-   4. 手机触屏特化悬浮球 (解决手机点击无响应 Bug)
+   4. 手机/电脑全兼容悬浮球（原生 Click + 拖拽分离，100% 触发）
    ========================================================= */
 function initFloatingBall() {
     $("#cv-fab").remove();
@@ -216,10 +227,13 @@ function initFloatingBall() {
 
     if (!settings.enableFab) return;
 
-    const $fab = $(`<div id="cv-fab" title="单击打开存档管家 / 长按快捷切档">🗂️</div>`);
+    const $fab = $(`<div id="cv-fab" role="button" tabindex="0">🗂️</div>`);
     $fab.css({
+        position: "fixed",
+        zIndex: "2147483640",
         top: settings.fabPos.top || "70%",
-        left: settings.fabPos.left || "calc(100% - 54px)",
+        left: settings.fabPos.left || "calc(100% - 56px)",
+        pointerEvents: "auto",
     });
     $fab.addClass(settings.fabPos.dock === "left" ? "cv-dock-left" : "cv-dock-right");
 
@@ -235,57 +249,71 @@ function initFloatingBall() {
 
     const fabEl = $fab[0];
     let isDragging = false;
-    let pointerDown = false;
+    let dragMoved = false;
     let startX = 0, startY = 0;
     let initialLeft = 0, initialTop = 0;
     let longPressTimer = null;
-    let longPressTriggered = false;
-    let lastTouchTime = 0;
+    let longPressOpened = false;
 
-    const handleStart = (clientX, clientY) => {
+    // 1. 最可靠的原生 click 监听（手机轻触必触发）
+    fabEl.addEventListener("click", (e) => {
+        e.stopPropagation();
         resetIdle();
-        pointerDown = true;
-        isDragging = false;
-        longPressTriggered = false;
-        startX = clientX;
-        startY = clientY;
+        if (dragMoved || longPressOpened) {
+            dragMoved = false;
+            longPressOpened = false;
+            return;
+        }
+        openMainModal();
+    });
+
+    // 2. 触摸拖拽与长按支持（绝不调用 preventDefault 阻塞 click）
+    fabEl.addEventListener("touchstart", (e) => {
+        resetIdle();
+        const t = e.touches[0];
+        if (!t) return;
+        isDragging = true;
+        dragMoved = false;
+        longPressOpened = false;
+        startX = t.clientX;
+        startY = t.clientY;
         const rect = fabEl.getBoundingClientRect();
         initialLeft = rect.left;
         initialTop = rect.top;
 
         clearTimeout(longPressTimer);
         longPressTimer = setTimeout(() => {
-            if (pointerDown && !isDragging) {
-                longPressTriggered = true;
-                pointerDown = false;
+            if (isDragging && !dragMoved) {
+                longPressOpened = true;
+                isDragging = false;
                 openQuickSwitchSheet();
             }
-        }, 600);
-    };
+        }, 650);
+    }, { passive: true });
 
-    const handleMove = (clientX, clientY, ev) => {
-        if (!pointerDown) return;
-        const dx = clientX - startX;
-        const dy = clientY - startY;
-        // 手机手指触控容差设为 14px，防止轻微手抖导致点击失效
-        if (Math.abs(dx) > 14 || Math.abs(dy) > 14) {
-            isDragging = true;
+    fabEl.addEventListener("touchmove", (e) => {
+        if (!isDragging) return;
+        const t = e.touches[0];
+        if (!t) return;
+        const dx = t.clientX - startX;
+        const dy = t.clientY - startY;
+
+        if (Math.abs(dx) > 15 || Math.abs(dy) > 15) {
+            dragMoved = true;
             clearTimeout(longPressTimer);
-            if (ev && ev.cancelable) ev.preventDefault();
-
             const newLeft = Math.max(6, Math.min(window.innerWidth - 52, initialLeft + dx));
             const newTop = Math.max(10, Math.min(window.innerHeight - 56, initialTop + dy));
             $fab.css({ left: `${newLeft}px`, top: `${newTop}px`, transition: "none" });
         }
-    };
+    }, { passive: true });
 
-    const handleEnd = () => {
-        if (!pointerDown) return;
-        pointerDown = false;
+    fabEl.addEventListener("touchend", () => {
         clearTimeout(longPressTimer);
+        if (!isDragging) return;
+        isDragging = false;
         $fab.css({ transition: "opacity 0.35s ease, transform 0.25s ease" });
 
-        if (isDragging) {
+        if (dragMoved) {
             const rect = fabEl.getBoundingClientRect();
             const isLeft = rect.left + rect.width / 2 < window.innerWidth / 2;
             const dockLeft = isLeft ? "8px" : `${window.innerWidth - 54}px`;
@@ -296,44 +324,11 @@ function initFloatingBall() {
 
             settings.fabPos = { top: `${rect.top}px`, left: dockLeft, dock: dockSide };
             saveSettings();
-        } else if (!longPressTriggered) {
-            openMainModal();
+            // 延迟复位 dragMoved，避免紧随其后的 click 误触发
+            setTimeout(() => { dragMoved = false; }, 250);
         }
         resetIdle();
-    };
-
-    // 针对手机 Touch 事件独立监听，并用 lastTouchTime 屏蔽手机后续模拟的 Mouse 事件
-    fabEl.addEventListener("touchstart", (e) => {
-        lastTouchTime = Date.now();
-        const t = e.touches[0];
-        handleStart(t.clientX, t.clientY);
     }, { passive: true });
-
-    fabEl.addEventListener("touchmove", (e) => {
-        lastTouchTime = Date.now();
-        const t = e.touches[0];
-        handleMove(t.clientX, t.clientY, e);
-    }, { passive: false });
-
-    fabEl.addEventListener("touchend", (e) => {
-        lastTouchTime = Date.now();
-        if (e.cancelable) e.preventDefault();
-        handleEnd();
-    }, { passive: false });
-
-    // 针对电脑端鼠标事件（如果刚刚触发过 touch，则忽略）
-    fabEl.addEventListener("mousedown", (e) => {
-        if (Date.now() - lastTouchTime < 800 || e.button !== 0) return;
-        handleStart(e.clientX, e.clientY);
-        const onMouseMove = (me) => handleMove(me.clientX, me.clientY, me);
-        const onMouseUp = () => {
-            window.removeEventListener("mousemove", onMouseMove);
-            window.removeEventListener("mouseup", onMouseUp);
-            handleEnd();
-        };
-        window.addEventListener("mousemove", onMouseMove);
-        window.addEventListener("mouseup", onMouseUp);
-    });
 }
 
 /* =========================================================
@@ -346,7 +341,7 @@ async function openQuickSwitchSheet() {
     const char = ctx.characters?.[chid];
 
     const $sheet = $(`
-        <div id="cv-quick-sheet">
+        <div id="cv-quick-sheet" style="z-index:2147483645;">
           <div class="cv-quick-box">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
               <b>⚡ 快捷切档 ${char ? `- ${escapeHtml(char.name)}` : ""}</b>
@@ -399,13 +394,12 @@ async function openQuickSwitchSheet() {
 
     $("#cv-quick-list").html(html);
     $("#cv-quick-list .cv-quick-item").on("click", function () {
-        const fName = $(this).data("file");
-        switchAndLocate(chid, fName);
+        switchAndLocate(chid, $(this).data("file"));
     });
 }
 
 /* =========================================================
-   6. 主弹窗渲染与视图切换（内置悬浮球一键隐藏开关）
+   6. 主弹窗渲染与视图切换（先挂载显示，再安全渲染内容）
    ========================================================= */
 function applyThemeClass($el) {
     const mode = getSettings().themeMode;
@@ -415,191 +409,201 @@ function applyThemeClass($el) {
 }
 
 async function openMainModal() {
-    $("#cv-modal-overlay").remove();
-    const settings = getSettings();
-    currentView = "grid";
+    try {
+        $("#cv-modal-overlay").remove();
+        const settings = getSettings();
+        currentView = "grid";
 
-    const $modal = $(`
-        <div id="cv-modal-overlay">
-          <div class="cv-modal-container">
-            <div class="cv-header">
-              <div class="cv-top-bar">
-                <div class="cv-title">
-                  <span>🗂️ 存档管家</span>
-                  <span id="cv-sub-status" style="font-size:11px;opacity:0.7;font-weight:normal;"></span>
+        const $modal = $(`
+            <div id="cv-modal-overlay" style="z-index:2147483642;">
+              <div class="cv-modal-container">
+                <div class="cv-header">
+                  <div class="cv-top-bar">
+                    <div class="cv-title">
+                      <span>🗂️ 存档管家</span>
+                      <span id="cv-sub-status" style="font-size:11px;opacity:0.7;font-weight:normal;"></span>
+                    </div>
+                    <div style="display:flex;gap:5px;flex-wrap:wrap;">
+                      <span class="cv-pill" id="cv-toggle-fab-inline">${settings.enableFab ? "👁️ 隐藏球" : "🟢 开启球"}</span>
+                      <span class="cv-pill" id="cv-toggle-cols">📱 ${settings.gridCols}列</span>
+                      <span class="cv-pill" id="cv-clean-empty-btn">🧹 清废档</span>
+                      <span class="cv-pill" id="cv-close-modal">✕</span>
+                    </div>
+                  </div>
+
+                  <div class="cv-search-wrap">
+                    <i class="fa-solid fa-magnifying-glass" style="opacity:0.7;"></i>
+                    <input type="text" id="cv-search-input" placeholder="搜角色名、档位备注、或聊天对话台词..." />
+                    <span id="cv-search-clear" style="cursor:pointer;opacity:0.7;display:none;padding:0 6px;">✕</span>
+                  </div>
+
+                  <div class="cv-filter-row" id="cv-filter-bar">
+                    <span class="cv-pill active" data-filter="recent">🕒 最近游玩</span>
+                    <span class="cv-pill" data-filter="count">🔥 档位最多</span>
+                    <span class="cv-pill" data-filter="multi">📚 仅多档位角色</span>
+                    <span class="cv-pill" id="cv-build-index-pill">⚡ 建立全文索引</span>
+                  </div>
                 </div>
-                <div style="display:flex;gap:5px;flex-wrap:wrap;">
-                  <span class="cv-pill" id="cv-toggle-fab-inline" title="开启或隐藏桌面悬浮球">${settings.enableFab ? "👁️ 隐藏球" : "🟢 开启球"}</span>
-                  <span class="cv-pill" id="cv-toggle-cols">📱 ${settings.gridCols}列</span>
-                  <span class="cv-pill" id="cv-clean-empty-btn">🧹 清废档</span>
-                  <span class="cv-pill" id="cv-close-modal">✕</span>
+
+                <div class="cv-body" id="cv-body-content">
+                  <div style="text-align:center;padding:30px;opacity:0.7;">正在加载角色列表...</div>
                 </div>
-              </div>
-
-              <div class="cv-search-wrap">
-                <i class="fa-solid fa-magnifying-glass" style="opacity:0.7;"></i>
-                <input type="text" id="cv-search-input" placeholder="搜角色名、档位备注、或聊天对话台词..." />
-                <span id="cv-search-clear" style="cursor:pointer;opacity:0.7;display:none;padding:0 6px;">✕</span>
-              </div>
-
-              <div class="cv-filter-row" id="cv-filter-bar">
-                <span class="cv-pill active" data-filter="recent">🕒 最近游玩</span>
-                <span class="cv-pill" data-filter="count">🔥 档位最多</span>
-                <span class="cv-pill" data-filter="multi">📚 仅多档位角色</span>
-                <span class="cv-pill" id="cv-build-index-pill">⚡ 建立全文索引</span>
               </div>
             </div>
+        `);
 
-            <div class="cv-body" id="cv-body-content"></div>
-          </div>
-        </div>
-    `);
+        applyThemeClass($modal);
+        $("body").append($modal);
 
-    applyThemeClass($modal);
-    $("body").append($modal);
+        $modal.on("click", (e) => {
+            if (e.target.id === "cv-modal-overlay") $modal.remove();
+        });
+        $("#cv-close-modal").on("click", () => $modal.remove());
 
-    $modal.on("click", (e) => {
-        if (e.target.id === "cv-modal-overlay") $modal.remove();
-    });
-    $("#cv-close-modal").on("click", () => $modal.remove());
+        $("#cv-toggle-fab-inline").on("click", () => {
+            settings.enableFab = !settings.enableFab;
+            saveSettings();
+            initFloatingBall();
+            if (window.toastr) {
+                if (!settings.enableFab) toastr.info("悬浮球已隐藏！可在扩展设置中重新开启。");
+                else toastr.success("悬浮球已开启！");
+            }
+        });
 
-    // 弹窗内直接开关悬浮球
-    $("#cv-toggle-fab-inline").on("click", () => {
-        settings.enableFab = !settings.enableFab;
-        saveSettings();
-        initFloatingBall();
-        if (!settings.enableFab) {
-            toastr.info("悬浮球已隐藏！后续可通过左下角【魔杖菜单 ➔ 存档管家】或扩展设置重新开启。");
-        } else {
-            toastr.success("悬浮球已开启！");
-        }
-    });
+        $("#cv-toggle-cols").on("click", function () {
+            settings.gridCols = settings.gridCols === 2 ? 3 : 2;
+            saveSettings();
+            $(this).text(`📱 ${settings.gridCols}列`);
+            $(".cv-char-grid").removeClass("cols-2 cols-3").addClass(`cols-${settings.gridCols}`);
+        });
 
-    $("#cv-toggle-cols").on("click", function () {
-        settings.gridCols = settings.gridCols === 2 ? 3 : 2;
-        saveSettings();
-        $(this).text(`📱 ${settings.gridCols}列`);
-        $(".cv-char-grid").removeClass("cols-2 cols-3").addClass(`cols-${settings.gridCols}`);
-    });
+        $("#cv-filter-bar .cv-pill[data-filter]").on("click", function () {
+            $("#cv-filter-bar .cv-pill[data-filter]").removeClass("active");
+            $(this).addClass("active");
+            currentFilter = $(this).data("filter");
+            if (currentView === "grid") renderCharacterGrid();
+        });
 
-    $("#cv-filter-bar .cv-pill[data-filter]").on("click", function () {
-        $("#cv-filter-bar .cv-pill[data-filter]").removeClass("active");
-        $(this).addClass("active");
-        currentFilter = $(this).data("filter");
-        if (currentView === "grid") renderCharacterGrid();
-    });
+        $("#cv-build-index-pill").on("click", () => buildFullTextIndex(true));
+        $("#cv-clean-empty-btn").on("click", () => runEmptySlotCleaner());
 
-    $("#cv-build-index-pill").on("click", () => buildFullTextIndex(true));
-    $("#cv-clean-empty-btn").on("click", () => runEmptySlotCleaner());
+        let searchDebounce = null;
+        $("#cv-search-input").on("input", function () {
+            const kw = $(this).val().trim();
+            $("#cv-search-clear").toggle(Boolean(kw));
+            clearTimeout(searchDebounce);
+            searchDebounce = setTimeout(() => {
+                if (!kw) renderCharacterGrid();
+                else renderSearchResults(kw);
+            }, 180);
+        });
 
-    let searchDebounce = null;
-    $("#cv-search-input").on("input", function () {
-        const kw = $(this).val().trim();
-        $("#cv-search-clear").toggle(Boolean(kw));
-        clearTimeout(searchDebounce);
-        searchDebounce = setTimeout(() => {
-            if (!kw) renderCharacterGrid();
-            else renderSearchResults(kw);
-        }, 180);
-    });
+        $("#cv-search-clear").on("click", () => {
+            $("#cv-search-input").val("").trigger("input");
+        });
 
-    $("#cv-search-clear").on("click", () => {
-        $("#cv-search-input").val("").trigger("input");
-    });
-
-    renderCharacterGrid();
-    refreshAllCharCountsBackground();
+        renderCharacterGrid();
+        refreshAllCharCountsBackground();
+    } catch (err) {
+        console.error("[ChatVault] 打开弹窗异常:", err);
+        if (window.toastr) toastr.error("打开存档管家出错：" + err.message);
+    }
 }
 
 /* =========================================================
    7. 一级视图：角色美化海报墙
    ========================================================= */
 function renderCharacterGrid() {
-    currentView = "grid";
-    $("#cv-filter-bar").show();
-    const ctx = getContext();
-    const chars = ctx.characters || [];
-    const settings = getSettings();
-    const $body = $("#cv-body-content");
+    try {
+        currentView = "grid";
+        $("#cv-filter-bar").show();
+        const ctx = getContext();
+        const chars = ctx?.characters || [];
+        const settings = getSettings();
+        const $body = $("#cv-body-content");
 
-    if (!chars.length) {
-        $body.html(`<div style="text-align:center;padding:40px 0;opacity:0.7;">酒馆中还没有角色卡哦</div>`);
-        return;
-    }
+        if (!chars.length) {
+            $body.html(`<div style="text-align:center;padding:40px 0;opacity:0.7;">酒馆中还没有角色卡哦</div>`);
+            return;
+        }
 
-    let pinnedHtml = "";
-    if (settings.pinned.length > 0) {
-        const chips = settings.pinned.map((p) => {
-            const note = settings.notes[getSlotKey(p.avatar, p.fileName)] || p.fileName;
+        let pinnedHtml = "";
+        if (Array.isArray(settings.pinned) && settings.pinned.length > 0) {
+            const chips = settings.pinned.map((p) => {
+                const note = settings.notes[getSlotKey(p.avatar, p.fileName)] || p.fileName;
+                return `
+                    <div class="cv-pin-chip" data-chid="${p.chid}" data-file="${escapeHtml(p.fileName)}">
+                      <div class="cv-pin-chip-title">📌 ${escapeHtml(note)}</div>
+                      <div class="cv-pin-chip-sub">${escapeHtml(p.charName)} · ${escapeHtml(p.fileName)}</div>
+                    </div>
+                `;
+            }).join("");
+            pinnedHtml = `
+                <div class="cv-pinned-bar">
+                  <div class="cv-section-label">📌 置顶常用档位（点击直达）</div>
+                  <div class="cv-pinned-list">${chips}</div>
+                </div>
+            `;
+        }
+
+        let list = chars.map((c, idx) => ({
+            chid: idx,
+            name: c?.name || "未命名角色",
+            avatar: c?.avatar || "",
+            date_last_chat: c?.date_last_chat || 0,
+            count: settings.chatCounts[c?.avatar] ?? 1,
+        }));
+
+        if (currentFilter === "multi") {
+            list = list.filter((item) => item.count > 1);
+        }
+
+        if (currentFilter === "count") {
+            list.sort((a, b) => b.count - a.count || b.date_last_chat - a.date_last_chat);
+        } else {
+            list.sort((a, b) => b.date_last_chat - a.date_last_chat);
+        }
+
+        const cardsHtml = list.map((item) => {
+            const thumb = getSafeAvatarUrl(item.avatar);
+            const timeStr = item.date_last_chat
+                ? new Date(item.date_last_chat).toLocaleDateString()
+                : "未游玩";
             return `
-                <div class="cv-pin-chip" data-chid="${p.chid}" data-file="${escapeHtml(p.fileName)}">
-                  <div class="cv-pin-chip-title">📌 ${escapeHtml(note)}</div>
-                  <div class="cv-pin-chip-sub">${escapeHtml(p.charName)} · ${escapeHtml(p.fileName)}</div>
+                <div class="cv-char-card" data-chid="${item.chid}" data-avatar="${escapeHtml(item.avatar)}">
+                  <img src="${thumb}" loading="lazy" onerror="this.src='/img/ai4.png'" alt="${escapeHtml(item.name)}" />
+                  <div class="cv-char-badge" id="cv-badge-${item.chid}">💬 ${item.count} 档</div>
+                  <div class="cv-char-footer">
+                    <div class="cv-char-name">${escapeHtml(item.name)}</div>
+                    <div class="cv-char-time">🕒 ${timeStr}</div>
+                  </div>
                 </div>
             `;
         }).join("");
-        pinnedHtml = `
-            <div class="cv-pinned-bar">
-              <div class="cv-section-label">📌 置顶常用档位（点击直达）</div>
-              <div class="cv-pinned-list">${chips}</div>
+
+        $body.html(`
+            ${pinnedHtml}
+            <div class="cv-char-grid cols-${settings.gridCols}">
+              ${cardsHtml}
             </div>
-        `;
+        `);
+
+        $body.find(".cv-pin-chip").on("click", function () {
+            switchAndLocate($(this).data("chid"), $(this).data("file"));
+        });
+
+        $body.find(".cv-char-card").on("click", function () {
+            renderCharacterSlots(Number($(this).data("chid")));
+        });
+    } catch (err) {
+        console.error("[ChatVault] renderCharacterGrid error:", err);
+        $("#cv-body-content").html(`<div style="padding:20px;color:#f87171;">渲染角色列表出错：${escapeHtml(err.message)}</div>`);
     }
-
-    let list = chars.map((c, idx) => ({
-        chid: idx,
-        name: c.name,
-        avatar: c.avatar,
-        date_last_chat: c.date_last_chat || 0,
-        count: settings.chatCounts[c.avatar] ?? 1,
-    }));
-
-    if (currentFilter === "multi") {
-        list = list.filter((item) => item.count > 1);
-    }
-
-    if (currentFilter === "count") {
-        list.sort((a, b) => b.count - a.count || b.date_last_chat - a.date_last_chat);
-    } else {
-        list.sort((a, b) => b.date_last_chat - a.date_last_chat);
-    }
-
-    const cardsHtml = list.map((item) => {
-        const thumb = getThumbnailUrl("avatar", item.avatar);
-        const timeStr = item.date_last_chat
-            ? new Date(item.date_last_chat).toLocaleDateString()
-            : "未游玩";
-        return `
-            <div class="cv-char-card" data-chid="${item.chid}" data-avatar="${escapeHtml(item.avatar)}">
-              <img src="${thumb}" loading="lazy" alt="${escapeHtml(item.name)}" />
-              <div class="cv-char-badge" id="cv-badge-${item.chid}">💬 ${item.count} 档</div>
-              <div class="cv-char-footer">
-                <div class="cv-char-name">${escapeHtml(item.name)}</div>
-                <div class="cv-char-time">🕒 ${timeStr}</div>
-              </div>
-            </div>
-        `;
-    }).join("");
-
-    $body.html(`
-        ${pinnedHtml}
-        <div class="cv-char-grid cols-${settings.gridCols}">
-          ${cardsHtml}
-        </div>
-    `);
-
-    $body.find(".cv-pin-chip").on("click", function () {
-        switchAndLocate($(this).data("chid"), $(this).data("file"));
-    });
-
-    $body.find(".cv-char-card").on("click", function () {
-        renderCharacterSlots(Number($(this).data("chid")));
-    });
 }
 
 async function refreshAllCharCountsBackground() {
     const ctx = getContext();
-    const chars = ctx.characters || [];
+    const chars = ctx?.characters || [];
     const settings = getSettings();
 
     for (let i = 0; i < chars.length; i++) {
@@ -621,16 +625,16 @@ async function renderCharacterSlots(chid) {
     $("#cv-filter-bar").hide();
 
     const ctx = getContext();
-    const char = ctx.characters[chid];
+    const char = ctx?.characters?.[chid];
     if (!char) return;
 
     const $body = $("#cv-body-content");
-    const thumb = getThumbnailUrl("avatar", char.avatar);
+    const thumb = getSafeAvatarUrl(char.avatar);
 
     $body.html(`
         <div class="cv-detail-header">
           <span class="cv-pill" id="cv-back-grid">⬅ 返回</span>
-          <img class="cv-detail-avatar" src="${thumb}" />
+          <img class="cv-detail-avatar" src="${thumb}" onerror="this.src='/img/ai4.png'" />
           <div style="flex:1;min-width:0;">
             <div style="font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(char.name)}</div>
             <div style="font-size:12px;opacity:0.75;" id="cv-detail-sub">正在读取聊天档位...</div>
@@ -648,7 +652,7 @@ async function renderCharacterSlots(chid) {
             await new Promise((r) => setTimeout(r, 350));
         }
         await doNewChat({ deleteCurrentChat: false });
-        toastr.success("已为该角色开启新档位！");
+        if (window.toastr) toastr.success("已为该角色开启新档位！");
     });
 
     const chats = await fetchCharacterChats(char.avatar);
@@ -731,10 +735,10 @@ async function renderCharacterSlots(chid) {
             const idx = settings.pinned.findIndex((p) => p.avatar === char.avatar && p.fileName === fName);
             if (idx >= 0) {
                 settings.pinned.splice(idx, 1);
-                toastr.info("已取消置顶");
+                if (window.toastr) toastr.info("已取消置顶");
             } else {
                 settings.pinned.unshift({ chid, avatar: char.avatar, charName: char.name, fileName: fName });
-                toastr.success("已置顶到首页常用栏！");
+                if (window.toastr) toastr.success("已置顶到首页常用栏！");
             }
             saveSettings();
             renderCharacterSlots(chid);
@@ -743,24 +747,24 @@ async function renderCharacterSlots(chid) {
             if (newName && newName.trim() && newName.trim() !== fName) {
                 const ok = await renameChatFile(char.avatar, fName, newName.trim());
                 if (ok) {
-                    toastr.success("重命名成功！");
+                    if (window.toastr) toastr.success("重命名成功！");
                     renderCharacterSlots(chid);
-                } else toastr.error("重命名失败");
+                } else if (window.toastr) toastr.error("重命名失败");
             }
         } else if (action === "clone") {
-            toastr.info("正在克隆档位...");
+            if (window.toastr) toastr.info("正在克隆档位...");
             const ok = await cloneChatFile(char.name, char.avatar, fName);
             if (ok) {
-                toastr.success("已克隆出新备份档位！");
+                if (window.toastr) toastr.success("已克隆出新备份档位！");
                 renderCharacterSlots(chid);
-            } else toastr.error("克隆失败");
+            } else if (window.toastr) toastr.error("克隆失败");
         } else if (action === "delete") {
             if (confirm(`确定要永久删除档位【${fName}】吗？`)) {
                 const ok = await deleteChatFile(char.avatar, fName);
                 if (ok) {
-                    toastr.success("已删除该档位");
+                    if (window.toastr) toastr.success("已删除该档位");
                     renderCharacterSlots(chid);
-                } else toastr.error("删除失败");
+                } else if (window.toastr) toastr.error("删除失败");
             }
         }
     });
@@ -773,9 +777,9 @@ async function buildFullTextIndex(showToast = true) {
     if (isIndexing) return;
     isIndexing = true;
     const ctx = getContext();
-    const chars = ctx.characters || [];
+    const chars = ctx?.characters || [];
 
-    if (showToast) toastr.info("正在后台建立聊天全文索引，请稍候...");
+    if (showToast && window.toastr) toastr.info("正在后台建立聊天全文索引，请稍候...");
     $("#cv-sub-status").text("（正在建索引...）");
 
     for (let chid = 0; chid < chars.length; chid++) {
@@ -807,7 +811,7 @@ async function buildFullTextIndex(showToast = true) {
 
     isIndexing = false;
     $("#cv-sub-status").text(`（已索引 ${fullTextIndex.size} 档）`);
-    if (showToast) toastr.success(`全文索引完成！共收录 ${fullTextIndex.size} 个档位记录。`);
+    if (showToast && window.toastr) toastr.success(`全文索引完成！共收录 ${fullTextIndex.size} 个档位记录。`);
 
     const currentKw = $("#cv-search-input").val()?.trim();
     if (currentKw) renderSearchResults(currentKw);
@@ -823,14 +827,14 @@ async function renderSearchResults(keyword) {
     currentView = "search";
     $("#cv-filter-bar").hide();
     const ctx = getContext();
-    const chars = ctx.characters || [];
+    const chars = ctx?.characters || [];
     const settings = getSettings();
     const kwLower = keyword.toLowerCase();
     const $body = $("#cv-body-content");
 
     const matchedChars = chars
         .map((c, idx) => ({ chid: idx, char: c }))
-        .filter(({ char }) => char.name?.toLowerCase().includes(kwLower));
+        .filter(({ char }) => char?.name?.toLowerCase().includes(kwLower));
 
     const messageHits = [];
 
@@ -911,9 +915,9 @@ async function renderSearchResults(keyword) {
         html += `
             <div style="text-align:center;padding:28px 14px;opacity:0.8;">
               <div style="margin-bottom:10px;">未在已缓存档位中找到“<b>${escapeHtml(keyword)}</b>”</div>
-              <div class="menu_button" id="cv-deep-scan-btn" style="display:inline-block;padding:8px 16px;">
+              <button type="button" id="cv-deep-scan-btn" style="padding:10px 18px;border-radius:10px;border:1px solid var(--cv-accent);background:var(--cv-card-bg);color:var(--cv-text);cursor:pointer;">
                 🔍 点击深度扫描所有角色的历史档位
-              </div>
+              </button>
             </div>
         `;
     } else {
@@ -947,14 +951,14 @@ async function renderSearchResults(keyword) {
    ========================================================= */
 async function runEmptySlotCleaner() {
     const ctx = getContext();
-    const chars = ctx.characters || [];
+    const chars = ctx?.characters || [];
     const settings = getSettings();
 
     const targetChids = currentView === "detail" && selectedCharId !== null
         ? [selectedCharId]
         : chars.map((_, idx) => idx);
 
-    toastr.info("正在扫描只有 1 楼的空档位...");
+    if (window.toastr) toastr.info("正在扫描只有 1 楼的空档位...");
     const emptyList = [];
 
     for (const chid of targetChids) {
@@ -977,7 +981,7 @@ async function runEmptySlotCleaner() {
     }
 
     if (!emptyList.length) {
-        toastr.success("非常干净！没有发现多余的 1 楼废档。");
+        if (window.toastr) toastr.success("非常干净！没有发现多余的 1 楼废档。");
         return;
     }
 
@@ -989,18 +993,21 @@ async function runEmptySlotCleaner() {
         if (await deleteChatFile(item.avatar, item.fileName)) delCount++;
     }
 
-    toastr.success(`清理完成！共删除 ${delCount} 个空档位。`);
+    if (window.toastr) toastr.success(`清理完成！共删除 ${delCount} 个空档位。`);
     if (currentView === "detail" && selectedCharId !== null) renderCharacterSlots(selectedCharId);
     else renderCharacterGrid();
 }
 
 /* =========================================================
-   11. 插件启动入口（内嵌设置面板 HTML，彻底告别路径 404）
+   11. 插件启动入口（修复设置面板按钮竖排问题）
    ========================================================= */
-jQuery(async () => {
+jQuery(() => {
     const settings = getSettings();
 
-    // 直接内嵌渲染设置面板，不依赖外部 settings.html 路径
+    // 清理可能重复注入的旧面板
+    $(".chat-vault-settings").remove();
+
+    // 采用独立横向按钮样式，彻底解决 .menu_button 导致文字竖排的问题
     const inlineSettingsHtml = `
       <div class="chat-vault-settings">
         <div class="inline-drawer">
@@ -1009,13 +1016,13 @@ jQuery(async () => {
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
           </div>
           <div class="inline-drawer-content">
-            <div class="cv-setting-row" style="margin:8px 0;">
-              <label class="checkbox_label">
+            <div style="margin:10px 0;">
+              <label class="checkbox_label" style="display:flex;align-items:center;gap:8px;">
                 <input type="checkbox" id="cv_enable_fab" />
                 <span>开启桌面悬浮球（长按快捷切档 / 拖拽贴边）</span>
               </label>
             </div>
-            <div class="cv-setting-row" style="margin:8px 0;">
+            <div style="margin:10px 0;display:flex;flex-direction:column;gap:4px;">
               <label for="cv_theme_mode">界面主题风格：</label>
               <select id="cv_theme_mode" class="text_pole">
                 <option value="inherit">🔗 跟随酒馆美化主题（默认推荐）</option>
@@ -1023,20 +1030,20 @@ jQuery(async () => {
                 <option value="light">☀️ 纯粹浅色毛玻璃</option>
               </select>
             </div>
-            <div class="cv-setting-row" style="margin:8px 0;">
+            <div style="margin:10px 0;display:flex;flex-direction:column;gap:4px;">
               <label for="cv_grid_cols">手机海报墙默认列数：</label>
               <select id="cv_grid_cols" class="text_pole">
                 <option value="2">一行 2 个（立绘更清晰）</option>
                 <option value="3">一行 3 个（紧凑浏览）</option>
               </select>
             </div>
-            <div class="cv-setting-actions" style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
-              <div class="menu_button" id="cv_open_modal_btn">
+            <div style="display:flex;gap:10px;margin-top:12px;width:100%;">
+              <button type="button" id="cv_open_modal_btn" style="flex:1;white-space:nowrap;padding:9px 12px;border-radius:10px;border:1px solid var(--SmartThemeBorderColor,rgba(255,255,255,0.2));background:var(--SmartThemeQuoteColor,#7aa2f7);color:#fff;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
                 <i class="fa-solid fa-folder-open"></i> 立即打开存档管家
-              </div>
-              <div class="menu_button" id="cv_rebuild_index_btn">
+              </button>
+              <button type="button" id="cv_rebuild_index_btn" style="flex:1;white-space:nowrap;padding:9px 12px;border-radius:10px;border:1px solid var(--SmartThemeBorderColor,rgba(255,255,255,0.2));background:rgba(128,128,140,0.22);color:var(--SmartThemeBodyColor,#fff);font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
                 <i class="fa-solid fa-rotate"></i> 刷新全文搜索索引
-              </div>
+              </button>
             </div>
           </div>
         </div>
@@ -1061,26 +1068,32 @@ jQuery(async () => {
         saveSettings();
     });
 
-    $("#cv_open_modal_btn").on("click", () => openMainModal());
-    $("#cv_rebuild_index_btn").on("click", () => buildFullTextIndex(true));
+    $("#cv_open_modal_btn").on("click", (e) => {
+        e.preventDefault();
+        openMainModal();
+    });
 
-    // 在左下角魔杖扩展菜单添加固定入口
-    if ($("#cv-wand-entry").length === 0) {
-        const $wandItem = $(`
-            <div id="cv-wand-entry" class="list-group-item flex-container flexGap5 interactable">
-              <i class="fa-solid fa-folder-tree"></i>
-              <span>存档管家 (Chat Vault)</span>
-            </div>
-        `);
-        $wandItem.on("click", () => openMainModal());
-        $("#extensionsMenu").append($wandItem);
-    }
+    $("#cv_rebuild_index_btn").on("click", (e) => {
+        e.preventDefault();
+        buildFullTextIndex(true);
+    });
+
+    // 魔杖扩展菜单入口
+    $("#cv-wand-entry").remove();
+    const $wandItem = $(`
+        <div id="cv-wand-entry" class="list-group-item flex-container flexGap5 interactable">
+          <i class="fa-solid fa-folder-tree"></i>
+          <span>存档管家 (Chat Vault)</span>
+        </div>
+    `);
+    $wandItem.on("click", () => openMainModal());
+    $("#extensionsMenu").append($wandItem);
 
     initFloatingBall();
 
     eventSource.on(event_types.CHAT_CHANGED, () => {
         const ctx = getContext();
-        if (ctx.characterId !== undefined && ctx.characters?.[ctx.characterId]) {
+        if (ctx?.characterId !== undefined && ctx.characters?.[ctx.characterId]) {
             ctx.characters[ctx.characterId].date_last_chat = Date.now();
         }
     });
