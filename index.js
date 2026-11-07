@@ -27,55 +27,141 @@ let selectedCharId = null;
 let currentFilter = "recent";
 
 /* =========================================================
-   0. 强制内嵌注入 CSS 样式（彻底解决 style.css 没加载或透明隐形问题）
+   0. 动态吸取酒馆当前第三方美化包样式 + 内嵌 CSS
    ========================================================= */
+function syncTavernBeauty() {
+    const root = document.documentElement;
+    const bodyStyle = getComputedStyle(document.body);
+    const rootStyle = getComputedStyle(root);
+
+    // 寻找酒馆内已经被美化包渲染的核心面板（抽屉、聊天窗、顶部栏）
+    const sampleDrawer =
+        document.querySelector(".drawer-content") ||
+        document.querySelector("#sheld") ||
+        document.querySelector("#top-settings-holder") ||
+        document.body;
+    const drawerStyle = getComputedStyle(sampleDrawer);
+
+    // 1. 提取背景色（优先取 CSS 变量，若为空或全透明则取抽屉真实背景色）
+    let bg =
+        rootStyle.getPropertyValue("--SmartThemeBlurTintColor").trim() ||
+        drawerStyle.backgroundColor;
+    if (!bg || bg === "rgba(0, 0, 0, 0)" || bg === "transparent") {
+        bg = bodyStyle.backgroundColor || "rgba(28, 28, 36, 0.85)";
+    }
+
+    // 2. 提取背景图片/渐变（有些美化老师用渐变做面板底色）
+    const bgImage =
+        drawerStyle.backgroundImage && drawerStyle.backgroundImage !== "none"
+            ? drawerStyle.backgroundImage
+            : "none";
+
+    // 3. 提取文字颜色、强调色、引用色、边框色、字体
+    const textColor =
+        rootStyle.getPropertyValue("--SmartThemeBodyColor").trim() ||
+        drawerStyle.color ||
+        bodyStyle.color ||
+        "#f3f4f6";
+
+    const emColor =
+        rootStyle.getPropertyValue("--SmartThemeEmColor").trim() ||
+        textColor;
+
+    const quoteColor =
+        rootStyle.getPropertyValue("--SmartThemeQuoteColor").trim() ||
+        "#7aa2f7";
+
+    const borderColor =
+        rootStyle.getPropertyValue("--SmartThemeBorderColor").trim() ||
+        drawerStyle.borderColor ||
+        "rgba(150, 150, 160, 0.28)";
+
+    const blurStrength =
+        rootStyle.getPropertyValue("--SmartThemeBlurStrength").trim() ||
+        "14px";
+
+    const fontFamily =
+        rootStyle.getPropertyValue("--mainFontFamily").trim() ||
+        bodyStyle.fontFamily ||
+        "sans-serif";
+
+    const boxShadow =
+        drawerStyle.boxShadow && drawerStyle.boxShadow !== "none"
+            ? drawerStyle.boxShadow
+            : "0 -8px 32px rgba(0, 0, 0, 0.45)";
+
+    // 将吸取到的真实美化参数写入插件动态变量
+    root.style.setProperty("--cv-inherit-bg", bg);
+    root.style.setProperty("--cv-inherit-bg-img", bgImage);
+    root.style.setProperty("--cv-inherit-text", textColor);
+    root.style.setProperty("--cv-inherit-em", emColor);
+    root.style.setProperty("--cv-inherit-accent", quoteColor);
+    root.style.setProperty("--cv-inherit-border", borderColor);
+    root.style.setProperty("--cv-inherit-blur", blurStrength);
+    root.style.setProperty("--cv-inherit-font", fontFamily);
+    root.style.setProperty("--cv-inherit-shadow", boxShadow);
+}
+
 function injectMasterStyles() {
+    syncTavernBeauty();
     if (document.getElementById("cv-master-styles")) return;
     const styleEl = document.createElement("style");
     styleEl.id = "cv-master-styles";
     styleEl.textContent = `
-      :root {
-        --cv-bg: rgba(22, 24, 32, 0.94);
-        --cv-blur: var(--SmartThemeBlurStrength, 16px);
-        --cv-text: var(--SmartThemeBodyColor, #f3f4f6);
-        --cv-em: var(--SmartThemeEmColor, #ffb86c);
-        --cv-accent: var(--SmartThemeQuoteColor, #7aa2f7);
-        --cv-border: var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.18));
-        --cv-card-bg: rgba(128, 128, 145, 0.18);
-        --cv-font: var(--mainFontFamily, -apple-system, BlinkMacSystemFont, sans-serif);
+      /* 默认跟随酒馆美化变量 */
+      #cv-modal-overlay, #cv-quick-sheet, #cv-fab {
+        --cv-bg: var(--cv-inherit-bg, var(--SmartThemeBlurTintColor, rgba(28, 28, 36, 0.86)));
+        --cv-bg-img: var(--cv-inherit-bg-img, none);
+        --cv-blur: var(--cv-inherit-blur, var(--SmartThemeBlurStrength, 14px));
+        --cv-text: var(--cv-inherit-text, var(--SmartThemeBodyColor, #f3f4f6));
+        --cv-em: var(--cv-inherit-em, var(--SmartThemeEmColor, #ffb86c));
+        --cv-accent: var(--cv-inherit-accent, var(--SmartThemeQuoteColor, #7aa2f7));
+        --cv-border: var(--cv-inherit-border, var(--SmartThemeBorderColor, rgba(160, 160, 175, 0.25)));
+        --cv-card-bg: color-mix(in srgb, var(--cv-text) 8%, transparent);
+        --cv-font: var(--cv-inherit-font, var(--mainFontFamily, sans-serif));
+        --cv-shadow: var(--cv-inherit-shadow, 0 -8px 32px rgba(0, 0, 0, 0.45));
       }
+
+      /* 独立暗黑模式 */
       .cv-theme-dark {
-        --cv-bg: rgba(16, 17, 23, 0.96) !important;
+        --cv-bg: rgba(18, 19, 26, 0.94) !important;
+        --cv-bg-img: none !important;
         --cv-text: #f3f4f6 !important;
         --cv-em: #fbbf24 !important;
         --cv-accent: #60a5fa !important;
-        --cv-border: rgba(255, 255, 255, 0.15) !important;
-        --cv-card-bg: rgba(255, 255, 255, 0.08) !important;
+        --cv-border: rgba(255, 255, 255, 0.14) !important;
+        --cv-card-bg: rgba(255, 255, 255, 0.07) !important;
       }
+
+      /* 独立浅色模式 */
       .cv-theme-light {
-        --cv-bg: rgba(246, 247, 251, 0.96) !important;
+        --cv-bg: rgba(250, 250, 253, 0.94) !important;
+        --cv-bg-img: none !important;
         --cv-text: #1f2937 !important;
         --cv-em: #d97706 !important;
-        --cv-accent: #2563eb !important;
-        --cv-border: rgba(0, 0, 0, 0.15) !important;
-        --cv-card-bg: rgba(0, 0, 0, 0.06) !important;
+        --cv-accent: #ec4899 !important;
+        --cv-border: rgba(0, 0, 0, 0.12) !important;
+        --cv-card-bg: rgba(0, 0, 0, 0.05) !important;
       }
+
+      /* 悬浮球完全跟随美化配色与毛玻璃 */
       #cv-fab {
         position: fixed !important;
         z-index: 2147483640 !important;
-        width: 48px !important;
-        height: 48px !important;
+        width: 46px !important;
+        height: 46px !important;
         border-radius: 50% !important;
-        background: rgba(24, 26, 36, 0.92) !important;
-        backdrop-filter: blur(12px) !important;
-        -webkit-backdrop-filter: blur(12px) !important;
-        border: 2px solid var(--cv-accent) !important;
-        color: #fff !important;
+        background-color: var(--cv-bg) !important;
+        background-image: var(--cv-bg-img) !important;
+        backdrop-filter: blur(var(--cv-blur)) !important;
+        -webkit-backdrop-filter: blur(var(--cv-blur)) !important;
+        border: 1.5px solid var(--cv-border) !important;
+        color: var(--cv-text) !important;
         display: flex !important;
         align-items: center !important;
         justify-content: center !important;
-        font-size: 22px !important;
-        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55) !important;
+        font-size: 20px !important;
+        box-shadow: var(--cv-shadow) !important;
         touch-action: none !important;
         user-select: none !important;
         -webkit-user-select: none !important;
@@ -86,6 +172,7 @@ function injectMasterStyles() {
       #cv-fab.cv-idle.cv-dock-left { transform: translateX(-12px); }
       #cv-fab.cv-idle.cv-dock-right { transform: translateX(12px); }
 
+      /* 遮罩层轻微暗化，保留底下酒馆美化的背景壁纸通透感 */
       #cv-modal-overlay, #cv-quick-sheet {
         position: fixed !important;
         top: 0 !important;
@@ -95,7 +182,7 @@ function injectMasterStyles() {
         width: 100vw !important;
         height: 100vh !important;
         z-index: 2147483645 !important;
-        background: rgba(0, 0, 0, 0.65) !important;
+        background: rgba(0, 0, 0, 0.38) !important;
         display: flex !important;
         align-items: flex-end !important;
         justify-content: center !important;
@@ -105,25 +192,38 @@ function injectMasterStyles() {
       @media (min-width: 768px) {
         #cv-modal-overlay { align-items: center !important; }
       }
+
+      /* 弹窗主面板：继承酒馆美化背景、毛玻璃、边框、字体 */
       .cv-modal-container {
         width: 100% !important;
         max-width: 680px !important;
         height: 88vh !important;
-        background: var(--cv-bg) !important;
+        background-color: var(--cv-bg) !important;
+        background-image: var(--cv-bg-img) !important;
         backdrop-filter: blur(var(--cv-blur)) !important;
         -webkit-backdrop-filter: blur(var(--cv-blur)) !important;
-        border-top: 1.5px solid var(--cv-border) !important;
+        border: 1.5px solid var(--cv-border) !important;
         border-radius: 22px 22px 0 0 !important;
         display: flex !important;
         flex-direction: column !important;
         overflow: hidden !important;
-        box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.6) !important;
+        box-shadow: var(--cv-shadow) !important;
+        color: var(--cv-text) !important;
+        font-family: var(--cv-font) !important;
       }
+      @media (min-width: 768px) {
+        .cv-modal-container {
+          height: 84vh !important;
+          border-radius: 20px !important;
+        }
+      }
+
       .cv-quick-box {
         width: 100% !important;
         max-width: 520px !important;
         max-height: 72vh !important;
-        background: var(--cv-bg) !important;
+        background-color: var(--cv-bg) !important;
+        background-image: var(--cv-bg-img) !important;
         backdrop-filter: blur(var(--cv-blur)) !important;
         -webkit-backdrop-filter: blur(var(--cv-blur)) !important;
         border-top: 1.5px solid var(--cv-border) !important;
@@ -160,6 +260,7 @@ function injectMasterStyles() {
       .cv-title {
         font-size: 16px;
         font-weight: 700;
+        color: var(--cv-em);
         display: flex;
         align-items: center;
         gap: 6px;
@@ -178,9 +279,14 @@ function injectMasterStyles() {
         background: transparent !important;
         border: none !important;
         color: var(--cv-text) !important;
+        font-family: var(--cv-font) !important;
         font-size: 14px !important;
         outline: none !important;
         padding: 6px 0 !important;
+      }
+      .cv-search-wrap input::placeholder {
+        color: var(--cv-text) !important;
+        opacity: 0.55 !important;
       }
       .cv-filter-row {
         display: flex;
@@ -191,7 +297,7 @@ function injectMasterStyles() {
       }
       .cv-filter-row::-webkit-scrollbar { display: none; }
       .cv-pill {
-        padding: 5px 11px;
+        padding: 5px 10px;
         border-radius: 999px;
         font-size: 12px;
         white-space: nowrap;
@@ -202,11 +308,12 @@ function injectMasterStyles() {
         display: inline-flex;
         align-items: center;
         gap: 4px;
+        transition: all 0.15s ease;
       }
       .cv-pill.active {
         background: var(--cv-accent) !important;
         color: #fff !important;
-        border-color: transparent !important;
+        border-color: var(--cv-accent) !important;
         font-weight: 600;
       }
       .cv-body {
@@ -218,7 +325,8 @@ function injectMasterStyles() {
       .cv-pinned-bar { margin-bottom: 14px; }
       .cv-section-label {
         font-size: 12px;
-        opacity: 0.8;
+        color: var(--cv-em);
+        opacity: 0.9;
         margin-bottom: 6px;
         display: flex;
         align-items: center;
@@ -262,10 +370,10 @@ function injectMasterStyles() {
         aspect-ratio: 3 / 4.2;
         border-radius: 14px;
         overflow: hidden;
-        border: 1px solid var(--cv-border);
-        background: #222533;
+        border: 1.5px solid var(--cv-border);
+        background: var(--cv-card-bg);
         cursor: pointer;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
       }
       .cv-char-card img {
         width: 100%;
@@ -277,19 +385,21 @@ function injectMasterStyles() {
         position: absolute;
         top: 8px;
         right: 8px;
-        background: rgba(0, 0, 0, 0.72);
-        color: #fff;
+        background: var(--cv-bg);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        color: var(--cv-text);
         font-size: 11px;
         font-weight: 600;
         padding: 3px 8px;
         border-radius: 999px;
-        border: 1px solid rgba(255,255,255,0.2);
+        border: 1px solid var(--cv-border);
       }
       .cv-char-footer {
         position: absolute;
         left: 0; right: 0; bottom: 0;
-        padding: 22px 10px 8px;
-        background: linear-gradient(to top, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.6) 65%, transparent 100%);
+        padding: 20px 10px 8px;
+        background: linear-gradient(to top, rgba(0,0,0,0.88) 0%, rgba(0,0,0,0.5) 65%, transparent 100%);
         color: #fff;
       }
       .cv-char-name {
@@ -299,7 +409,7 @@ function injectMasterStyles() {
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      .cv-char-time { font-size: 11px; opacity: 0.8; margin-top: 2px; }
+      .cv-char-time { font-size: 11px; opacity: 0.85; margin-top: 2px; }
       .cv-detail-header {
         display: flex;
         align-items: center;
@@ -313,7 +423,7 @@ function injectMasterStyles() {
         height: 48px;
         border-radius: 12px;
         object-fit: cover;
-        border: 1px solid var(--cv-accent);
+        border: 1.5px solid var(--cv-accent);
       }
       .cv-slot-card {
         background: var(--cv-card-bg);
@@ -335,7 +445,7 @@ function injectMasterStyles() {
         gap: 8px;
         cursor: pointer;
       }
-      .cv-slot-title { font-weight: 700; font-size: 14px; word-break: break-all; }
+      .cv-slot-title { font-weight: 700; font-size: 14px; color: var(--cv-em); word-break: break-all; }
       .cv-slot-note-tag {
         display: inline-block;
         background: var(--cv-accent);
@@ -346,11 +456,12 @@ function injectMasterStyles() {
         margin-right: 6px;
         font-weight: 600;
       }
-      .cv-slot-meta { font-size: 11px; opacity: 0.78; display: flex; flex-wrap: wrap; gap: 8px; }
+      .cv-slot-meta { font-size: 11px; opacity: 0.8; display: flex; flex-wrap: wrap; gap: 8px; }
       .cv-slot-preview {
         font-size: 12.5px;
-        opacity: 0.9;
-        background: rgba(0, 0, 0, 0.25);
+        opacity: 0.92;
+        background: var(--cv-card-bg);
+        border: 1px solid var(--cv-border);
         padding: 8px 10px;
         border-radius: 8px;
         cursor: pointer;
@@ -367,7 +478,7 @@ function injectMasterStyles() {
         padding: 5px 10px;
         border-radius: 8px;
         font-size: 12px;
-        background: rgba(128, 128, 140, 0.22);
+        background: var(--cv-card-bg);
         border: 1px solid var(--cv-border);
         color: var(--cv-text);
         cursor: pointer;
@@ -444,10 +555,26 @@ function getSafeAvatarUrl(avatarFile) {
     return `/thumbnail?type=avatar&file=${encodeURIComponent(avatarFile)}`;
 }
 
+function getThemeLabel(mode) {
+    if (mode === "dark") return "🌙 暗黑";
+    if (mode === "light") return "☀️ 浅色";
+    return "🔗 跟随美化";
+}
+
 function syncFabToggleUI() {
-    const enabled = getSettings().enableFab;
-    $("#cv_enable_fab").prop("checked", enabled);
-    $("#cv-toggle-fab-inline").html(enabled ? "👁️ 隐藏球" : "🟢 开启球");
+    const settings = getSettings();
+    $("#cv_enable_fab").prop("checked", settings.enableFab);
+    $("#cv_theme_mode").val(settings.themeMode);
+    $("#cv-toggle-fab-inline").html(settings.enableFab ? "👁️ 隐藏球" : "🟢 开启球");
+    $("#cv-cycle-theme-inline").html(getThemeLabel(settings.themeMode));
+}
+
+function applyThemeClass($el) {
+    syncTavernBeauty();
+    const mode = getSettings().themeMode;
+    $el.removeClass("cv-theme-dark cv-theme-light");
+    if (mode === "dark") $el.addClass("cv-theme-dark");
+    if (mode === "light") $el.addClass("cv-theme-light");
 }
 
 /* =========================================================
@@ -591,7 +718,7 @@ function scrollToMessageFloor(mesId) {
 }
 
 /* =========================================================
-   4. 手机/电脑全兼容悬浮球（PointerEvent 统一驱动，零冲突）
+   4. 手机/电脑全兼容悬浮球
    ========================================================= */
 function initFloatingBall() {
     injectMasterStyles();
@@ -609,6 +736,8 @@ function initFloatingBall() {
     fabEl.style.top = settings.fabPos.top || "68%";
     fabEl.style.left = settings.fabPos.left || "calc(100% - 58px)";
     fabEl.className = settings.fabPos.dock === "left" ? "cv-dock-left" : "cv-dock-right";
+    if (settings.themeMode === "dark") fabEl.classList.add("cv-theme-dark");
+    if (settings.themeMode === "light") fabEl.classList.add("cv-theme-light");
 
     document.body.appendChild(fabEl);
 
@@ -714,6 +843,7 @@ async function openQuickSwitchSheet() {
         </div>
     `);
 
+    applyThemeClass($sheet);
     $("body").append($sheet);
     $sheet.on("click", (e) => {
         if (e.target.id === "cv-quick-sheet") $sheet.remove();
@@ -761,15 +891,8 @@ async function openQuickSwitchSheet() {
 }
 
 /* =========================================================
-   6. 主弹窗渲染与视图切换（强制顶层显示）
+   6. 主弹窗渲染与视图切换（实时同步美化 + 顶部一键切主题）
    ========================================================= */
-function applyThemeClass($el) {
-    const mode = getSettings().themeMode;
-    $el.removeClass("cv-theme-dark cv-theme-light");
-    if (mode === "dark") $el.addClass("cv-theme-dark");
-    if (mode === "light") $el.addClass("cv-theme-light");
-}
-
 async function openMainModal() {
     try {
         injectMasterStyles();
@@ -788,7 +911,8 @@ async function openMainModal() {
                       <span>🗂️ 存档管家</span>
                       <span id="cv-sub-status" style="font-size:11px;opacity:0.7;font-weight:normal;"></span>
                     </div>
-                    <div style="display:flex;gap:5px;flex-wrap:wrap;">
+                    <div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;">
+                      <span class="cv-pill" id="cv-cycle-theme-inline" title="点击切换主题模式">${getThemeLabel(settings.themeMode)}</span>
                       <span class="cv-pill" id="cv-toggle-fab-inline">${settings.enableFab ? "👁️ 隐藏球" : "🟢 开启球"}</span>
                       <span class="cv-pill" id="cv-toggle-cols">📱 ${settings.gridCols}列</span>
                       <span class="cv-pill" id="cv-clean-empty-btn">🧹 清废档</span>
@@ -824,6 +948,17 @@ async function openMainModal() {
             if (e.target.id === "cv-modal-overlay") $modal.remove();
         });
         $("#cv-close-modal").on("click", () => $modal.remove());
+
+        // 弹窗内实时循环切换主题模式（跟随美化 -> 暗黑 -> 浅色）
+        $("#cv-cycle-theme-inline").on("click", () => {
+            const order = ["inherit", "dark", "light"];
+            const nextIdx = (order.indexOf(settings.themeMode) + 1) % order.length;
+            settings.themeMode = order[nextIdx];
+            saveSettings();
+            applyThemeClass($modal);
+            initFloatingBall();
+            syncFabToggleUI();
+        });
 
         $("#cv-toggle-fab-inline").on("click", () => {
             settings.enableFab = !settings.enableFab;
@@ -875,7 +1010,6 @@ async function openMainModal() {
     }
 }
 
-// 暴露全局函数，确保 HTML 内联 onclick 100% 触发
 window.cvOpenModal = openMainModal;
 window.cvRebuildIndex = () => buildFullTextIndex(true);
 
@@ -904,7 +1038,7 @@ function renderCharacterGrid() {
                     <div class="cv-pin-chip" data-chid="${p.chid}" data-file="${escapeHtml(p.fileName)}">
                       <div class="cv-pin-chip-title">📌 ${escapeHtml(note)}</div>
                       <div class="cv-pin-chip-sub">${escapeHtml(p.charName)} · ${escapeHtml(p.fileName)}</div>
-                    </div>
+                </div>
                 `;
             }).join("");
             pinnedHtml = `
@@ -1392,7 +1526,7 @@ jQuery(() => {
             <div style="margin:10px 0;display:flex;flex-direction:column;gap:4px;">
               <label for="cv_theme_mode">界面主题风格：</label>
               <select id="cv_theme_mode" class="text_pole">
-                <option value="inherit">🔗 跟随酒馆美化主题（默认推荐）</option>
+                <option value="inherit">🔗 跟随酒馆美化主题（自动吸取当前美化包配色）</option>
                 <option value="dark">🌙 纯粹暗黑毛玻璃</option>
                 <option value="light">☀️ 纯粹浅色毛玻璃</option>
               </select>
@@ -1405,10 +1539,10 @@ jQuery(() => {
               </select>
             </div>
             <div style="display:flex;gap:10px;margin-top:12px;width:100%;">
-              <button type="button" onclick="window.cvOpenModal && window.cvOpenModal()" style="flex:1;white-space:nowrap;padding:9px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.2);background:var(--SmartThemeQuoteColor,#7aa2f7);color:#fff;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
+              <button type="button" onclick="window.cvOpenModal && window.cvOpenModal()" style="flex:1;white-space:nowrap;padding:9px 12px;border-radius:10px;border:1px solid var(--cv-border,rgba(255,255,255,0.2));background:var(--cv-accent,#7aa2f7);color:#fff;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
                 <i class="fa-solid fa-folder-open"></i> 立即打开存档管家
               </button>
-              <button type="button" onclick="window.cvRebuildIndex && window.cvRebuildIndex()" style="flex:1;white-space:nowrap;padding:9px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.2);background:rgba(128,128,140,0.25);color:var(--SmartThemeBodyColor,#fff);font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
+              <button type="button" onclick="window.cvRebuildIndex && window.cvRebuildIndex()" style="flex:1;white-space:nowrap;padding:9px 12px;border-radius:10px;border:1px solid var(--cv-border,rgba(255,255,255,0.2));background:rgba(128,128,140,0.25);color:var(--cv-text,#fff);font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
                 <i class="fa-solid fa-rotate"></i> 刷新全文搜索索引
               </button>
             </div>
@@ -1428,6 +1562,9 @@ jQuery(() => {
     $("#cv_theme_mode").val(settings.themeMode).on("change", function () {
         settings.themeMode = $(this).val();
         saveSettings();
+        initFloatingBall();
+        const $modal = $("#cv-modal-overlay");
+        if ($modal.length) applyThemeClass($modal);
     });
 
     $("#cv_grid_cols").val(String(settings.gridCols)).on("change", function () {
@@ -1435,7 +1572,6 @@ jQuery(() => {
         saveSettings();
     });
 
-    // 魔杖扩展菜单入口
     $("#cv-wand-entry").remove();
     const $wandItem = $(`
         <div id="cv-wand-entry" onclick="window.cvOpenModal && window.cvOpenModal()" class="list-group-item flex-container flexGap5 interactable">
