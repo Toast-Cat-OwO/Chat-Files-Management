@@ -1981,7 +1981,7 @@ async function renderBackupCenterView() {
 async function buildSelectiveBackupPackage(onProgress) {
     const settings = getSettings();
     const pack = {
-        version: "2.1.0",
+        version: "1.0.0",
         timestamp: Date.now(),
         modules: {},
     };
@@ -2590,7 +2590,7 @@ jQuery(() => {
       <div class="chat-vault-settings">
         <div class="inline-drawer">
           <div class="inline-drawer-toggle inline-drawer-header">
-            <b>存档管家 (Chat Vault)</b>
+            <b>存档管家</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
           </div>
           <div class="inline-drawer-content">
@@ -2653,7 +2653,7 @@ jQuery(() => {
     const $wandItem = $(`
         <div id="cv-wand-entry" onclick="window.cvOpenModal && window.cvOpenModal()" class="list-group-item flex-container flexGap5 interactable">
           <i class="fa-solid fa-layer-group"></i>
-          <span>存档管家 (Chat Vault)</span>
+          <span>存档管家</span>
         </div>
     `);
     $("#extensionsMenu").append($wandItem);
