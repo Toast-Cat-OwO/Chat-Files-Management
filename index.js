@@ -1,7 +1,5 @@
 import { getContext, extension_settings } from "../../../extensions.js";
 import {
-    eventSource,
-    event_types,
     getRequestHeaders,
     selectCharacterById,
     openCharacterChat,
@@ -14,7 +12,7 @@ const defaultSettings = {
     enableFab: true,
     themeMode: "inherit", // inherit | dark | light
     gridCols: 2,          // 2 | 3
-    fabPos: { top: "68%", left: "calc(100% - 56px)", dock: "right" },
+    fabPos: { top: "68%", left: "calc(100% - 54px)", dock: "right" },
     notes: {},
     pinned: [],
     chatCounts: {},
@@ -29,17 +27,20 @@ let isIndexing = false;
 let currentView = "grid"; // grid | detail | search | backup
 let selectedCharId = null;
 let currentFilter = "recent";
+let searchScope = "global"; // global | char
+let modalOpenTimestamp = 0; // 防点击穿透时间戳锁
+let historyStatePushed = false;
 
-// 备份中心缓存数据（用于二级精细勾选）
 let backupCatalog = {
-    characters: [],   // { avatar, name, world, chatsCount, checked }
-    worlds: [],       // { name, isBoundToChar, checked }
-    themes: [],       // { name, data, checked }
+    characters: [],
+    worlds: [],
+    themes: [],
     includeCustomCss: true,
-    presets: [],      // { name, data, checked }
-    extensions: [],   // { id, displayName, url, checked }
+    presets: [],
+    extensions: [],
     includeChatsWithChar: true,
     includeBoundWorldWithChar: true,
+    rawSettingsSnapshot: {},
 };
 
 /* =========================================================
@@ -61,7 +62,7 @@ function syncTavernBeauty() {
         rootStyle.getPropertyValue("--SmartThemeBlurTintColor").trim() ||
         drawerStyle.backgroundColor;
     if (!bg || bg === "rgba(0, 0, 0, 0)" || bg === "transparent") {
-        bg = bodyStyle.backgroundColor || "rgba(24, 25, 32, 0.9)";
+        bg = bodyStyle.backgroundColor || "rgba(24, 25, 32, 0.92)";
     }
 
     const bgImage =
@@ -267,7 +268,7 @@ function injectMasterStyles() {
         background: var(--cv-card-bg);
         border: 1px solid var(--cv-border);
         border-radius: 10px;
-        padding: 3px 12px;
+        padding: 3px 10px;
         gap: 8px;
       }
       .cv-search-wrap input {
@@ -376,7 +377,11 @@ function injectMasterStyles() {
         background: var(--cv-card-bg);
         cursor: pointer;
         box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
-        transition: transform 0.15s ease;
+        transition: transform 0.15s ease, border-color 0.2s;
+      }
+      .cv-char-card.active-char {
+        border: 2px solid var(--cv-accent);
+        box-shadow: 0 0 14px color-mix(in srgb, var(--cv-accent) 40%, transparent);
       }
       .cv-char-card:active { transform: scale(0.97); }
       .cv-char-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -392,6 +397,17 @@ function injectMasterStyles() {
         padding: 2px 8px;
         border-radius: 6px;
         border: 1px solid rgba(255, 255, 255, 0.15);
+      }
+      .cv-char-current-tag {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        background: var(--cv-accent);
+        color: #fff;
+        font-size: 10.5px;
+        font-weight: 600;
+        padding: 2px 7px;
+        border-radius: 6px;
       }
       .cv-char-footer {
         position: absolute;
@@ -452,6 +468,13 @@ function injectMasterStyles() {
         cursor: pointer;
         line-height: 1.45;
       }
+      .cv-slot-inline-editor {
+        display: none;
+        gap: 6px;
+        align-items: center;
+        padding-top: 4px;
+      }
+      .cv-slot-inline-editor.show { display: flex; }
       .cv-slot-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; padding-top: 6px; border-top: 1px solid var(--cv-border); }
       .cv-btn-sm {
         padding: 4px 10px;
@@ -464,6 +487,7 @@ function injectMasterStyles() {
       }
       .cv-btn-sm.primary { background: var(--cv-accent); color: #fff; border-color: transparent; }
       .cv-btn-sm.danger { color: #ef4444; }
+      .cv-btn-sm.confirming { background: #ef4444 !important; color: #fff !important; border-color: #ef4444 !important; font-weight: 600; }
 
       .cv-search-hit {
         background: var(--cv-card-bg);
@@ -477,7 +501,6 @@ function injectMasterStyles() {
       .cv-hit-snippet { font-size: 12.5px; line-height: 1.45; word-break: break-word; opacity: 0.9; }
       .cv-highlight-kw { background: rgba(250, 204, 21, 0.85); color: #000; font-weight: 600; padding: 0 3px; border-radius: 3px; }
 
-      /* 五维折叠备份卡片设计 */
       .cv-acc-card {
         background: var(--cv-card-bg);
         border: 1px solid var(--cv-border);
@@ -494,23 +517,9 @@ function injectMasterStyles() {
         cursor: pointer;
         user-select: none;
       }
-      .cv-acc-left {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        flex: 1;
-        min-width: 0;
-      }
-      .cv-acc-title {
-        font-size: 13.5px;
-        font-weight: 600;
-        color: var(--cv-em);
-      }
-      .cv-acc-sub {
-        font-size: 11.5px;
-        opacity: 0.65;
-        margin-top: 2px;
-      }
+      .cv-acc-left { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+      .cv-acc-title { font-size: 13.5px; font-weight: 600; color: var(--cv-em); }
+      .cv-acc-sub { font-size: 11.5px; opacity: 0.65; margin-top: 2px; }
       .cv-acc-badge {
         font-size: 11px;
         padding: 2px 8px;
@@ -533,6 +542,8 @@ function injectMasterStyles() {
         display: flex;
         justify-content: space-between;
         align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
         margin-bottom: 8px;
         padding-bottom: 6px;
         border-bottom: 1px dashed var(--cv-border);
@@ -558,11 +569,7 @@ function injectMasterStyles() {
         cursor: pointer;
         min-width: 0;
       }
-      .cv-sub-item span {
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
+      .cv-sub-item span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .cv-ext-row {
         display: flex;
         flex-direction: column;
@@ -583,12 +590,7 @@ function injectMasterStyles() {
         font-size: 12px;
         outline: none;
       }
-      .cv-action-row {
-        display: flex;
-        gap: 8px;
-        margin-top: 10px;
-        flex-wrap: wrap;
-      }
+      .cv-action-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
       .cv-btn-block {
         flex: 1;
         min-width: 135px;
@@ -605,11 +607,7 @@ function injectMasterStyles() {
         justify-content: center;
         gap: 6px;
       }
-      .cv-btn-block.primary {
-        background: var(--cv-accent);
-        color: #fff;
-        border-color: transparent;
-      }
+      .cv-btn-block.primary { background: var(--cv-accent); color: #fff; border-color: transparent; }
 
       @keyframes cvFlashMessage {
         0%, 100% { box-shadow: none; }
@@ -621,7 +619,7 @@ function injectMasterStyles() {
 }
 
 /* =========================================================
-   1. 基础工具函数
+   1. 基础工具与时间解析排序函数
    ========================================================= */
 function getSettings() {
     extension_settings[EXT_NAME] = extension_settings[EXT_NAME] || {};
@@ -685,6 +683,43 @@ function applyThemeClass($el) {
     if (mode === "light") $el.addClass("cv-theme-light");
 }
 
+// 解析档位最后互动时间戳，确保档位列表严格按从新到旧倒序排列
+function parseChatSlotTimestamp(slot) {
+    if (slot.last_mes && typeof slot.last_mes === "number") return slot.last_mes;
+    if (slot.last_mes && typeof slot.last_mes === "string") {
+        const parsed = Date.parse(slot.last_mes);
+        if (!isNaN(parsed)) return parsed;
+    }
+    // 从文件名提取形如 2026-11-08 @02h15m30s 的日期
+    const fName = String(slot.file_name || "");
+    const m = fName.match(/(\d{4})-(\d{1,2})-(\d{1,2})\s*@?\s*(\d{1,2})h\s*(\d{1,2})m\s*(\d{1,2})?s?/i);
+    if (m) {
+        return new Date(
+            Number(m[1]),
+            Number(m[2]) - 1,
+            Number(m[3]),
+            Number(m[4] || 0),
+            Number(m[5] || 0),
+            Number(m[6] || 0)
+        ).getTime();
+    }
+    return 0;
+}
+
+function sortChatSlotsNewestFirst(chats, currentFileName = "") {
+    const cleanCur = stripFileExt(currentFileName);
+    return [...chats].sort((a, b) => {
+        const nameA = stripFileExt(a.file_name);
+        const nameB = stripFileExt(b.file_name);
+        if (cleanCur && nameA === cleanCur && nameB !== cleanCur) return -1;
+        if (cleanCur && nameB === cleanCur && nameA !== cleanCur) return 1;
+        const tA = parseChatSlotTimestamp(a);
+        const tB = parseChatSlotTimestamp(b);
+        if (tB !== tA) return tB - tA;
+        return nameB.localeCompare(nameA);
+    });
+}
+
 function blobToBase64(blob) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -707,7 +742,7 @@ function base64ToBlob(dataUrl) {
 /* =========================================================
    2. 后端 API 封装
    ========================================================= */
-async function fetchCharacterChats(avatarUrl) {
+async function fetchCharacterChats(avatarUrl, shouldSave = true) {
     try {
         const res = await fetch("/api/characters/chats", {
             method: "POST",
@@ -718,7 +753,7 @@ async function fetchCharacterChats(avatarUrl) {
         const data = await res.json();
         const list = Array.isArray(data) ? data : Object.values(data || {});
         getSettings().chatCounts[avatarUrl] = list.length;
-        saveSettings();
+        if (shouldSave) saveSettings();
         return list;
     } catch (e) {
         return [];
@@ -798,13 +833,23 @@ async function cloneChatFile(charName, avatarUrl, fileName) {
 }
 
 /* =========================================================
-   3. 跨角色切档 + 楼层定位
+   3. 跨角色切档 + 楼层定位 + 手机侧滑返回手势保护
    ========================================================= */
+function closeModalCleanly() {
+    $("#cv-modal-overlay, #cv-quick-sheet").remove();
+    if (historyStatePushed) {
+        historyStatePushed = false;
+        if (history.state && history.state.chatVaultOpen) {
+            try { history.back(); } catch (_) {}
+        }
+    }
+}
+
 async function switchAndLocate(chid, fileName, targetMesId = null) {
     const ctx = getContext();
     const cleanFile = stripFileExt(fileName);
 
-    $("#cv-modal-overlay, #cv-quick-sheet").remove();
+    closeModalCleanly();
     if (window.toastr) toastr.info(`正在切换档位：${cleanFile}`);
 
     if (String(ctx.characterId) !== String(chid)) {
@@ -840,8 +885,29 @@ function scrollToMessageFloor(mesId) {
     }, 250);
 }
 
+// 监听手机系统返回键/侧滑返回手势，优先返回上一级页面而不是退出酒馆网页
+window.addEventListener("popstate", () => {
+    const $modal = $("#cv-modal-overlay");
+    if (!$modal.length) {
+        historyStatePushed = false;
+        return;
+    }
+    if (currentView === "detail" || currentView === "backup" || currentView === "search") {
+        // 如果在二级页面，退回角色海报墙首页，并重新压入历史栈保持拦截
+        try { history.pushState({ chatVaultOpen: true }, ""); } catch (_) {}
+        historyStatePushed = true;
+        $("#cv-search-input").val("");
+        $("#cv-search-clear").hide();
+        renderCharacterGrid();
+    } else {
+        // 如果已经在海报墙首页，则关闭弹窗
+        historyStatePushed = false;
+        $modal.remove();
+    }
+});
+
 /* =========================================================
-   4. 极简悬浮球
+   4. 悬浮球（彻底防点击穿透）
    ========================================================= */
 function initFloatingBall() {
     injectMasterStyles();
@@ -857,7 +923,7 @@ function initFloatingBall() {
     fabEl.id = "cv-fab";
     fabEl.innerHTML = `<i class="fa-solid fa-layer-group"></i>`;
     fabEl.style.top = settings.fabPos.top || "68%";
-    fabEl.style.left = settings.fabPos.left || "calc(100% - 56px)";
+    fabEl.style.left = settings.fabPos.left || "calc(100% - 54px)";
     fabEl.className = settings.fabPos.dock === "left" ? "cv-dock-left" : "cv-dock-right";
     if (settings.themeMode === "dark") fabEl.classList.add("cv-theme-dark");
     if (settings.themeMode === "light") fabEl.classList.add("cv-theme-light");
@@ -878,6 +944,12 @@ function initFloatingBall() {
     let startX = 0, startY = 0;
     let startLeft = 0, startTop = 0;
     let lpTimer = null;
+
+    // 拦截原生 click 冒泡，防止穿透到底下新弹出的角色卡
+    fabEl.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+    }, true);
 
     fabEl.addEventListener("pointerdown", (e) => {
         resetIdle();
@@ -938,14 +1010,17 @@ function initFloatingBall() {
             settings.fabPos = { top: `${rect.top}px`, left: dockLeft, dock: dockSide };
             saveSettings();
         } else if (!longPressed) {
-            openMainModal();
+            if (e.cancelable) e.preventDefault();
+            e.stopPropagation();
+            // 延迟 40ms 打开弹窗并激活 380ms 防穿透锁，彻底消灭手机滞后幽灵点击
+            setTimeout(() => openMainModal(), 40);
         }
         resetIdle();
     });
 }
 
 /* =========================================================
-   5. 长按悬浮球：快捷切档菜单
+   5. 长按悬浮球：快捷切档菜单（按时间倒序）
    ========================================================= */
 async function openQuickSwitchSheet() {
     injectMasterStyles();
@@ -981,15 +1056,17 @@ async function openQuickSwitchSheet() {
         return;
     }
 
-    const chats = await fetchCharacterChats(char.avatar);
-    if (!chats.length) {
+    const rawChats = await fetchCharacterChats(char.avatar);
+    if (!rawChats.length) {
         $("#cv-quick-list").html(`<div>暂无历史档位</div>`);
         return;
     }
 
     const currentFile = stripFileExt(char.chat || "");
+    const sortedChats = sortChatSlotsNewestFirst(rawChats, currentFile);
     const settings = getSettings();
-    const html = chats.slice(0, 8).map((c) => {
+
+    const html = sortedChats.slice(0, 8).map((c) => {
         const fName = stripFileExt(c.file_name);
         const note = settings.notes[getSlotKey(char.avatar, fName)] || "";
         const isCur = fName === currentFile;
@@ -1022,9 +1099,22 @@ async function openMainModal() {
         const existing = document.getElementById("cv-modal-overlay");
         if (existing) existing.remove();
 
+        // 记录弹窗开启时刻，380ms 内屏蔽任何穿透点击
+        modalOpenTimestamp = Date.now();
+
+        if (!historyStatePushed) {
+            try {
+                history.pushState({ chatVaultOpen: true }, "");
+                historyStatePushed = true;
+            } catch (_) {}
+        }
+
+        const ctx = getContext();
+        const hasActiveChar = ctx?.characterId !== undefined && ctx?.characters?.[ctx.characterId];
         const settings = getSettings();
         currentView = "grid";
         selectedCharId = null;
+        searchScope = "global";
 
         const $modal = $(`
             <div id="cv-modal-overlay">
@@ -1037,6 +1127,7 @@ async function openMainModal() {
                       <span id="cv-sub-status" style="font-size:11px;opacity:0.65;font-weight:normal;"></span>
                     </div>
                     <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+                      ${hasActiveChar ? `<span class="cv-pill" id="cv-jump-current-char"><i class="fa-solid fa-user-check"></i> 当前角色</span>` : ""}
                       <span class="cv-pill" id="cv-open-backup-view"><i class="fa-solid fa-cloud-arrow-up"></i> 备份与同步</span>
                       <span class="cv-pill" id="cv-cycle-theme-inline">${getThemeLabel(settings.themeMode)}</span>
                       <span class="cv-pill" id="cv-toggle-cols">${settings.gridCols} 列</span>
@@ -1047,6 +1138,7 @@ async function openMainModal() {
                   <div class="cv-search-wrap" id="cv-search-bar-wrap">
                     <i class="fa-solid fa-magnifying-glass" style="opacity:0.55;font-size:13px;"></i>
                     <input type="text" id="cv-search-input" placeholder="搜索角色名、档位备注、或历史对话内容..." />
+                    <span class="cv-pill" id="cv-search-scope-btn" style="display:none;padding:2px 8px;font-size:11px;">仅当前角色</span>
                     <span id="cv-search-clear" style="cursor:pointer;opacity:0.6;display:none;padding:0 4px;"><i class="fa-solid fa-xmark"></i></span>
                   </div>
 
@@ -1071,9 +1163,17 @@ async function openMainModal() {
         document.body.appendChild($modal[0]);
 
         $modal.on("click", (e) => {
-            if (e.target.id === "cv-modal-overlay") $modal.remove();
+            if (Date.now() - modalOpenTimestamp < 380) return;
+            if (e.target.id === "cv-modal-overlay") closeModalCleanly();
         });
-        $("#cv-close-modal").on("click", () => $modal.remove());
+        $("#cv-close-modal").on("click", () => closeModalCleanly());
+
+        // 一键直达当前正在聊天的角色档位页
+        $("#cv-jump-current-char").on("click", () => {
+            if (ctx?.characterId !== undefined) {
+                renderCharacterSlots(Number(ctx.characterId));
+            }
+        });
 
         $("#cv-open-backup-view").on("click", () => {
             if (currentView === "backup") {
@@ -1121,14 +1221,31 @@ async function openMainModal() {
         $("#cv-build-index-pill").on("click", () => buildFullTextIndex(true));
         $("#cv-clean-empty-btn").on("click", () => runEmptySlotCleaner());
 
+        // 搜索范围切换（当前角色 vs 全局）
+        $("#cv-search-scope-btn").on("click", function () {
+            searchScope = searchScope === "char" ? "global" : "char";
+            $(this)
+                .toggleClass("active", searchScope === "char")
+                .text(searchScope === "char" ? "仅当前角色" : "全局搜索");
+            const kw = $("#cv-search-input").val().trim();
+            if (kw) renderSearchResults(kw);
+        });
+
         let searchDebounce = null;
         $("#cv-search-input").on("input", function () {
             const kw = $(this).val().trim();
             $("#cv-search-clear").toggle(Boolean(kw));
             clearTimeout(searchDebounce);
             searchDebounce = setTimeout(() => {
-                if (!kw) renderCharacterGrid();
-                else renderSearchResults(kw);
+                if (!kw) {
+                    if (selectedCharId !== null && searchScope === "char") {
+                        renderCharacterSlots(selectedCharId);
+                    } else {
+                        renderCharacterGrid();
+                    }
+                } else {
+                    renderSearchResults(kw);
+                }
             }, 180);
         });
 
@@ -1137,9 +1254,9 @@ async function openMainModal() {
         });
 
         renderCharacterGrid();
-        refreshAllCharCountsBackground();
+        refreshAllCharCountsGentle();
     } catch (err) {
-        console.error("[ChatVault] openMainModal error:", err);
+        console.error("[存档管家] openMainModal error:", err);
     }
 }
 
@@ -1147,16 +1264,21 @@ window.cvOpenModal = openMainModal;
 window.cvRebuildIndex = () => buildFullTextIndex(true);
 
 /* =========================================================
-   7. 一级视图：角色海报墙
+   7. 一级视图：角色海报墙（高亮当前角色 + 380ms 防穿透保护）
    ========================================================= */
 function renderCharacterGrid() {
     try {
         currentView = "grid";
+        selectedCharId = null;
+        searchScope = "global";
         $("#cv-open-backup-view").removeClass("active");
         $("#cv-search-bar-wrap, #cv-filter-bar").show();
+        $("#cv-search-scope-btn").hide();
+        $("#cv-search-input").attr("placeholder", "搜索角色名、档位备注、或历史对话内容...");
 
         const ctx = getContext();
         const chars = ctx?.characters || [];
+        const activeChid = ctx?.characterId !== undefined ? Number(ctx.characterId) : -1;
         const settings = getSettings();
         const $body = $("#cv-body-content");
 
@@ -1190,6 +1312,7 @@ function renderCharacterGrid() {
             avatar: c?.avatar || "",
             date_last_chat: c?.date_last_chat || 0,
             count: settings.chatCounts[c?.avatar] ?? 1,
+            isCurrent: idx === activeChid,
         }));
 
         if (currentFilter === "multi") {
@@ -1197,9 +1320,9 @@ function renderCharacterGrid() {
         }
 
         if (currentFilter === "count") {
-            list.sort((a, b) => b.count - a.count || b.date_last_chat - a.date_last_chat);
+            list.sort((a, b) => (b.isCurrent - a.isCurrent) || (b.count - a.count) || (b.date_last_chat - a.date_last_chat));
         } else {
-            list.sort((a, b) => b.date_last_chat - a.date_last_chat);
+            list.sort((a, b) => (b.isCurrent - a.isCurrent) || (b.date_last_chat - a.date_last_chat));
         }
 
         const cardsHtml = list.map((item) => {
@@ -1208,8 +1331,9 @@ function renderCharacterGrid() {
                 ? new Date(item.date_last_chat).toLocaleDateString()
                 : "未游玩";
             return `
-                <div class="cv-char-card" data-chid="${item.chid}" data-avatar="${escapeHtml(item.avatar)}">
+                <div class="cv-char-card ${item.isCurrent ? "active-char" : ""}" data-chid="${item.chid}" data-avatar="${escapeHtml(item.avatar)}">
                   <img src="${thumb}" loading="lazy" onerror="this.src='/img/ai4.png'" alt="${escapeHtml(item.name)}" />
+                  ${item.isCurrent ? `<div class="cv-char-current-tag">当前对话</div>` : ""}
                   <div class="cv-char-badge" id="cv-badge-${item.chid}">${item.count} 档</div>
                   <div class="cv-char-footer">
                     <div class="cv-char-name">${escapeHtml(item.name)}</div>
@@ -1227,10 +1351,17 @@ function renderCharacterGrid() {
         `);
 
         $body.find(".cv-pin-chip").on("click", function () {
+            if (Date.now() - modalOpenTimestamp < 380) return;
             switchAndLocate($(this).data("chid"), $(this).data("file"));
         });
 
-        $body.find(".cv-char-card").on("click", function () {
+        $body.find(".cv-char-card").on("click", function (e) {
+            // 核心防穿透保护：弹窗刚打开的 380ms 内忽略任何落到卡片上的滞后点击
+            if (Date.now() - modalOpenTimestamp < 380) {
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
             renderCharacterSlots(Number($(this).data("chid")));
         });
     } catch (err) {
@@ -1238,32 +1369,43 @@ function renderCharacterGrid() {
     }
 }
 
-async function refreshAllCharCountsBackground() {
+// 温和后台统计（仅在打开弹窗后低频读取未缓存的角色，不抢占酒馆初始化）
+async function refreshAllCharCountsGentle() {
     const ctx = getContext();
     const chars = ctx?.characters || [];
     const settings = getSettings();
+    let updated = false;
 
     for (let i = 0; i < chars.length; i++) {
+        if (!$("#cv-modal-overlay").length) break; // 若弹窗已关闭则停止
         const c = chars[i];
         if (!c?.avatar) continue;
         if (settings.chatCounts[c.avatar] === undefined) {
-            const chats = await fetchCharacterChats(c.avatar);
+            const chats = await fetchCharacterChats(c.avatar, false);
             $(`#cv-badge-${i}`).text(`${chats.length} 档`);
+            updated = true;
+            await new Promise((r) => setTimeout(r, 40));
         }
     }
+    if (updated) saveSettings();
 }
 
 /* =========================================================
-   8. 二级视图：角色档位详情
+   8. 二级视图：角色档位详情（时间倒序 + 内嵌输入框 + 二次确认删除）
    ========================================================= */
 async function renderCharacterSlots(chid) {
     currentView = "detail";
     selectedCharId = chid;
+    searchScope = "char";
     $("#cv-filter-bar").hide();
 
     const ctx = getContext();
     const char = ctx?.characters?.[chid];
     if (!char) return;
+
+    // 搜索栏自动切换为“仅搜该角色”模式
+    $("#cv-search-scope-btn").show().addClass("active").text("仅当前角色");
+    $("#cv-search-input").attr("placeholder", `在「${char.name}」的档位中搜索台词或备注...`);
 
     const $body = $("#cv-body-content");
     const thumb = getSafeAvatarUrl(char.avatar);
@@ -1281,9 +1423,14 @@ async function renderCharacterSlots(chid) {
         <div id="cv-slot-list"></div>
     `);
 
-    $("#cv-back-grid").on("click", () => renderCharacterGrid());
+    $("#cv-back-grid").on("click", () => {
+        $("#cv-search-input").val("");
+        $("#cv-search-clear").hide();
+        renderCharacterGrid();
+    });
+
     $("#cv-new-chat-btn").on("click", async () => {
-        $("#cv-modal-overlay").remove();
+        closeModalCleanly();
         if (String(ctx.characterId) !== String(chid)) {
             await selectCharacterById(String(chid));
             await new Promise((r) => setTimeout(r, 350));
@@ -1292,15 +1439,18 @@ async function renderCharacterSlots(chid) {
         if (window.toastr) toastr.success("已开启新档位");
     });
 
-    const chats = await fetchCharacterChats(char.avatar);
-    $("#cv-detail-sub").text(`共 ${chats.length} 个存档槽（点击卡片直接切换）`);
+    const rawChats = await fetchCharacterChats(char.avatar);
+    const currentChatFile = stripFileExt(char.chat || "");
+    // 按时间从近到远倒序排列（当前正在使用的档位固定置顶）
+    const chats = sortChatSlotsNewestFirst(rawChats, String(ctx.characterId) === String(chid) ? currentChatFile : "");
+
+    $("#cv-detail-sub").text(`共 ${chats.length} 个存档槽（按最新时间倒序排列）`);
 
     if (!chats.length) {
         $("#cv-slot-list").html(`<div style="text-align:center;padding:30px;opacity:0.65;">暂无聊天档位</div>`);
         return;
     }
 
-    const currentChatFile = stripFileExt(char.chat || "");
     const settings = getSettings();
 
     const slotsHtml = chats.map((c) => {
@@ -1336,6 +1486,13 @@ async function renderCharacterSlots(chid) {
                 ${escapeHtml(previewText)}
               </div>
 
+              <!-- 卡片内嵌迷你编辑器（替代原生丑陋的 prompt 弹窗） -->
+              <div class="cv-slot-inline-editor">
+                <input type="text" class="cv-input-field cv-inline-input" style="flex:1;" />
+                <span class="cv-btn-sm primary cv-inline-save">保存</span>
+                <span class="cv-btn-sm cv-inline-cancel">取消</span>
+              </div>
+
               <div class="cv-slot-actions">
                 <span class="cv-btn-sm" data-action="pin">${isPinned ? "取消置顶" : "置顶"}</span>
                 <span class="cv-btn-sm" data-action="note">备注</span>
@@ -1349,41 +1506,78 @@ async function renderCharacterSlots(chid) {
 
     $("#cv-slot-list").html(slotsHtml);
 
+    // 绑定内嵌编辑器保存与取消
+    $("#cv-slot-list").on("click", ".cv-inline-cancel", function (e) {
+        e.stopPropagation();
+        $(this).closest(".cv-slot-inline-editor").removeClass("show");
+    });
+
+    $("#cv-slot-list").on("click", ".cv-inline-save", async function (e) {
+        e.stopPropagation();
+        const $card = $(this).closest(".cv-slot-card");
+        const $editor = $(this).closest(".cv-slot-inline-editor");
+        const mode = $editor.data("mode");
+        const val = $editor.find(".cv-inline-input").val().trim();
+        const fName = $card.data("file");
+        const slotKey = getSlotKey(char.avatar, fName);
+
+        if (mode === "note") {
+            if (val) settings.notes[slotKey] = val;
+            else delete settings.notes[slotKey];
+            saveSettings();
+            renderCharacterSlots(chid);
+        } else if (mode === "rename") {
+            if (val && val !== fName) {
+                const ok = await renameChatFile(char.avatar, fName, val);
+                if (ok) {
+                    if (settings.notes[slotKey]) {
+                        settings.notes[getSlotKey(char.avatar, val)] = settings.notes[slotKey];
+                        delete settings.notes[slotKey];
+                        saveSettings();
+                    }
+                    renderCharacterSlots(chid);
+                } else if (window.toastr) {
+                    toastr.error("重命名失败");
+                }
+            } else {
+                $editor.removeClass("show");
+            }
+        }
+    });
+
+    $("#cv-slot-list").on("keydown", ".cv-inline-input", function (e) {
+        if (e.key === "Enter") {
+            e.preventDefault();
+            $(this).siblings(".cv-inline-save").trigger("click");
+        }
+    });
+
+    // 绑定卡片功能按钮
     $("#cv-slot-list .cv-slot-card").on("click", async function (e) {
         const $target = $(e.target).closest("[data-action]");
         if (!$target.length) return;
 
         const action = $target.data("action");
-        const fName = $(this).data("file");
+        const $card = $(this);
+        const fName = $card.data("file");
         const slotKey = getSlotKey(char.avatar, fName);
+        const $editor = $card.find(".cv-slot-inline-editor");
 
         if (action === "load") {
             switchAndLocate(chid, fName);
         } else if (action === "note") {
             const oldNote = settings.notes[slotKey] || "";
-            const newNote = prompt("设置档位备注标签（留空则清除）：", oldNote);
-            if (newNote !== null) {
-                if (newNote.trim()) settings.notes[slotKey] = newNote.trim();
-                else delete settings.notes[slotKey];
-                saveSettings();
-                renderCharacterSlots(chid);
-            }
+            $editor.data("mode", "note").addClass("show");
+            $editor.find(".cv-inline-input").attr("placeholder", "输入剧情备注标签（留空保存即清除）").val(oldNote).trigger("focus");
+        } else if (action === "rename") {
+            $editor.data("mode", "rename").addClass("show");
+            $editor.find(".cv-inline-input").attr("placeholder", "输入新的档位文件名").val(fName).trigger("focus");
         } else if (action === "pin") {
             const idx = settings.pinned.findIndex((p) => p.avatar === char.avatar && p.fileName === fName);
-            if (idx >= 0) {
-                settings.pinned.splice(idx, 1);
-            } else {
-                settings.pinned.unshift({ chid, avatar: char.avatar, charName: char.name, fileName: fName });
-            }
+            if (idx >= 0) settings.pinned.splice(idx, 1);
+            else settings.pinned.unshift({ chid, avatar: char.avatar, charName: char.name, fileName: fName });
             saveSettings();
             renderCharacterSlots(chid);
-        } else if (action === "rename") {
-            const newName = prompt("输入新的档位文件名：", fName);
-            if (newName && newName.trim() && newName.trim() !== fName) {
-                const ok = await renameChatFile(char.avatar, fName, newName.trim());
-                if (ok) renderCharacterSlots(chid);
-                else if (window.toastr) toastr.error("重命名失败");
-            }
         } else if (action === "clone") {
             const ok = await cloneChatFile(char.name, char.avatar, fName);
             if (ok) {
@@ -1391,24 +1585,27 @@ async function renderCharacterSlots(chid) {
                 renderCharacterSlots(chid);
             }
         } else if (action === "delete") {
-            if (confirm(`确定要删除档位「${fName}」吗？`)) {
-                const ok = await deleteChatFile(char.avatar, fName);
-                if (ok) renderCharacterSlots(chid);
+            // 内嵌二次确认防误触（不弹原生 confirm 框）
+            if (!$target.hasClass("confirming")) {
+                $target.addClass("confirming").text("确认删除?");
+                setTimeout(() => {
+                    $target.removeClass("confirming").text("删除");
+                }, 3000);
+                return;
             }
+            const ok = await deleteChatFile(char.avatar, fName);
+            if (ok) renderCharacterSlots(chid);
         }
     });
 }
 
 /* =========================================================
-   9. 五大模块精细化勾选备份中心（自动读取 Git 地址 + 角色绑定世界书联动）
+   9. 五大模块精细化勾选备份中心（含仅勾选有记录角色 + Git Blob 大文件云同步）
    ========================================================= */
-
-// 深度扫描已安装插件的真实 Git 仓库地址 (/api/extensions/version)
 async function scanExtensionsWithRealGitUrl() {
     const settings = getSettings();
     const extMap = new Map();
 
-    // 1. 先从 /api/extensions/discover 获取酒馆识别到的所有扩展
     try {
         const res = await fetch("/api/extensions/discover");
         if (res.ok) {
@@ -1416,7 +1613,7 @@ async function scanExtensionsWithRealGitUrl() {
             if (Array.isArray(data)) {
                 for (const item of data) {
                     if (item.type && item.type !== "third-party" && !String(item.name).includes("third-party")) {
-                        continue; // 跳过内置核心插件，只管用户装的第三方插件
+                        continue;
                     }
                     const id = item.name;
                     const displayName = id.replace(/^third-party[\\/]/, "");
@@ -1431,7 +1628,6 @@ async function scanExtensionsWithRealGitUrl() {
         }
     } catch (_) {}
 
-    // 2. 补充从 DOM script/link 扫描到的 third-party 文件夹
     document.querySelectorAll('script[src*="third-party/"], link[href*="third-party/"]').forEach((el) => {
         const src = el.src || el.href || "";
         const m = src.match(/third-party\/([^/?#]+)/);
@@ -1446,13 +1642,10 @@ async function scanExtensionsWithRealGitUrl() {
         }
     });
 
-    // 3. 逐个调用 /api/extensions/version 提取底层真实的 Git remoteUrl + manifest.homePage
     const list = Array.from(extMap.values());
     await Promise.all(
         list.map(async (ext) => {
             if (ext.url) return;
-
-            // 方式 A：请求酒馆后端的 Git 版本接口获取真实的安装克隆地址 (remoteUrl)
             for (const globalFlag of [false, true]) {
                 try {
                     const vRes = await fetch("/api/extensions/version", {
@@ -1469,8 +1662,6 @@ async function scanExtensionsWithRealGitUrl() {
                     }
                 } catch (_) {}
             }
-
-            // 方式 B：如果方式 A 没取到，读取插件目录下的 manifest.json
             if (!ext.url) {
                 try {
                     const mRes = await fetch(`/scripts/extensions/third-party/${ext.displayName}/manifest.json`);
@@ -1482,10 +1673,7 @@ async function scanExtensionsWithRealGitUrl() {
                     }
                 } catch (_) {}
             }
-
-            if (ext.url) {
-                settings.customExtUrls[ext.displayName] = ext.url;
-            }
+            if (ext.url) settings.customExtUrls[ext.displayName] = ext.url;
         })
     );
 
@@ -1493,28 +1681,26 @@ async function scanExtensionsWithRealGitUrl() {
     return list;
 }
 
-// 扫描全部 5 大模块资产目录
 async function loadFullBackupCatalog() {
     const ctx = getContext();
     const chars = ctx?.characters || [];
     const settings = getSettings();
 
-    // 1. 扫描角色卡及角色绑定的专属世界书
     const boundWorldSet = new Set();
     const charItems = chars.map((c, idx) => {
         const boundWorld = c?.data?.extensions?.world || c?.chat_metadata?.world || "";
         if (boundWorld) boundWorldSet.add(boundWorld);
+        const hasChatHistory = Boolean(c?.date_last_chat) || (settings.chatCounts[c?.avatar] || 0) > 1;
         return {
             chid: idx,
             name: c?.name || "未命名",
             avatar: c?.avatar || "",
             boundWorld,
-            chatsCount: settings.chatCounts[c?.avatar] ?? 1,
+            hasChatHistory,
             checked: true,
         };
     });
 
-    // 2. 读取后端 /api/settings/get 获取世界书列表、美化主题列表、预设列表
     let worldNames = [];
     let themesList = [];
     let presetsList = [];
@@ -1531,21 +1717,12 @@ async function loadFullBackupCatalog() {
             worldNames = sData.world_names || [];
             fullSettingsObj = sData.settings ? JSON.parse(sData.settings) : {};
 
-            // 提取美化主题 (Themes)
             if (Array.isArray(sData.themes)) {
-                themesList = sData.themes.map((t) => ({
-                    name: t.name || String(t),
-                    data: t,
-                    checked: true,
-                }));
+                themesList = sData.themes.map((t) => ({ name: t.name || String(t), data: t, checked: true }));
             } else if (Array.isArray(fullSettingsObj.themes)) {
-                themesList = fullSettingsObj.themes.map((t) => ({
-                    name: t.name || String(t),
-                    data: t,
-                    checked: true,
-                }));
+                themesList = fullSettingsObj.themes.map((t) => ({ name: t.name || String(t), data: t, checked: true }));
             }
-            // 把当前正在使用的 power_user.theme 也作为默认选中项保障
+
             const activeThemeName = fullSettingsObj?.theme || fullSettingsObj?.power_user?.theme;
             if (activeThemeName && !themesList.some((t) => t.name === activeThemeName)) {
                 themesList.unshift({
@@ -1555,7 +1732,6 @@ async function loadFullBackupCatalog() {
                 });
             }
 
-            // 提取对话预设 (OpenAI / Chat Completion Presets 等)
             if (sData.openai_setting_names && typeof sData.openai_setting_names === "object") {
                 const names = Array.isArray(sData.openai_setting_names)
                     ? sData.openai_setting_names
@@ -1575,7 +1751,6 @@ async function loadFullBackupCatalog() {
         checked: true,
     }));
 
-    // 3. 扫描第三方插件及 Git 地址
     const extItems = await scanExtensionsWithRealGitUrl();
 
     backupCatalog = {
@@ -1611,9 +1786,8 @@ async function renderBackupCenterView() {
 
     await loadFullBackupCatalog();
 
-    // 组装 5 大可折叠精细勾选卡片
     const charGridHtml = backupCatalog.characters.map((c, idx) => `
-        <label class="cv-sub-item" title="${escapeHtml(c.name)}${c.boundWorld ? ` (绑定世界书: ${c.boundWorld})` : ""}">
+        <label class="cv-sub-item cv-char-backup-item" data-name="${escapeHtml(c.name.toLowerCase())}" title="${escapeHtml(c.name)}${c.boundWorld ? ` (绑定世界书: ${c.boundWorld})` : ""}">
           <input type="checkbox" class="cv-item-cb" data-cat="characters" data-idx="${idx}" ${c.checked ? "checked" : ""} />
           <span>${escapeHtml(c.name)}</span>
           ${c.boundWorld ? `<i class="fa-solid fa-book-atlas" style="font-size:10px;opacity:0.65;margin-left:auto;" title="含专属世界书"></i>` : ""}
@@ -1625,7 +1799,7 @@ async function renderBackupCenterView() {
             <label class="cv-sub-item" title="${escapeHtml(w.name)}">
               <input type="checkbox" class="cv-item-cb" data-cat="worlds" data-idx="${idx}" ${w.checked ? "checked" : ""} />
               <span>${escapeHtml(w.name)}</span>
-              ${w.isBound ? `<span style="font-size:10px;opacity:0.6;margin-left:auto;">角色关联</span>` : ""}
+              ${w.isBound ? `<span style="font-size:10px;opacity:0.6;margin-left:auto;">关联</span>` : ""}
             </label>
           `).join("")
         : `<div style="opacity:0.6;font-size:12px;">暂无独立世界书</div>`;
@@ -1674,7 +1848,7 @@ async function renderBackupCenterView() {
         </div>
 
         <div style="font-size:12px;opacity:0.72;margin-bottom:10px;">
-          点击下方任意分类卡片可展开并精细勾选要导出的具体项目：
+          点击下方分类卡片可展开并精细勾选要导出的具体项目：
         </div>
 
         <!-- 1. 角色卡与关联世界书/聊天档位 -->
@@ -1692,20 +1866,22 @@ async function renderBackupCenterView() {
           </div>
           <div class="cv-acc-body">
             <div class="cv-sub-toolbar">
-              <div style="display:flex;gap:12px;flex-wrap:wrap;">
-                <label style="display:flex;align-items:center;gap:5px;cursor:pointer;">
-                  <input type="checkbox" id="cv-opt-char-chats" checked /> 附带角色聊天记录与备注
+              <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                  <input type="checkbox" id="cv-opt-char-chats" checked /> 含聊天记录
                 </label>
-                <label style="display:flex;align-items:center;gap:5px;cursor:pointer;">
-                  <input type="checkbox" id="cv-opt-char-world" checked /> 角色自带世界书自动跟随导出
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                  <input type="checkbox" id="cv-opt-char-world" checked /> 角色自带世界书跟随导出
                 </label>
               </div>
-              <div style="display:flex;gap:6px;">
+              <div style="display:flex;gap:5px;flex-wrap:wrap;">
+                <span class="cv-pill" id="cv-btn-only-chatted" style="padding:2px 8px;font-size:11px;">仅勾聊过的角色</span>
                 <span class="cv-pill cv-batch-btn" data-cat="characters" data-val="1" style="padding:2px 8px;font-size:11px;">全选</span>
                 <span class="cv-pill cv-batch-btn" data-cat="characters" data-val="0" style="padding:2px 8px;font-size:11px;">全不选</span>
               </div>
             </div>
-            <div class="cv-sub-grid">${charGridHtml}</div>
+            <input type="text" class="cv-input-field" id="cv-char-filter-input" placeholder="输入角色名快速筛选..." style="margin-bottom:8px;padding:5px 10px;" />
+            <div class="cv-sub-grid" id="cv-backup-char-grid">${charGridHtml}</div>
           </div>
         </div>
 
@@ -1734,7 +1910,7 @@ async function renderBackupCenterView() {
           </div>
         </div>
 
-        <!-- 3. 美化主题 (独立模块) -->
+        <!-- 3. 美化主题 -->
         <div class="cv-acc-card" data-section="themes">
           <div class="cv-acc-header">
             <div class="cv-acc-left">
@@ -1759,7 +1935,7 @@ async function renderBackupCenterView() {
           </div>
         </div>
 
-        <!-- 4. 对话预设 (独立模块) -->
+        <!-- 4. 对话预设 -->
         <div class="cv-acc-card" data-section="presets">
           <div class="cv-acc-header">
             <div class="cv-acc-left">
@@ -1809,7 +1985,7 @@ async function renderBackupCenterView() {
           </div>
         </div>
 
-        <!-- 本地导出/恢复 与 GitHub 云同步操作区 -->
+        <!-- 导出/恢复 与 GitHub 云同步操作区 -->
         <div class="cv-acc-card" style="padding:14px;">
           <div style="font-weight:600;font-size:13.5px;margin-bottom:8px;color:var(--cv-em);">执行备份或恢复</div>
           <div class="cv-action-row">
@@ -1823,7 +1999,7 @@ async function renderBackupCenterView() {
           </div>
 
           <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--cv-border);">
-            <div style="font-weight:600;font-size:13px;margin-bottom:8px;">GitHub 私有仓库云同步</div>
+            <div style="font-weight:600;font-size:13px;margin-bottom:8px;">GitHub 私有仓库云同步（支持大文件 Blob 流式传输）</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
               <input type="password" class="cv-input-field" id="cv-gh-token" placeholder="GitHub Token (ghp_...)" value="${escapeHtml(settings.ghToken)}" />
               <input type="text" class="cv-input-field" id="cv-gh-repo" placeholder="用户名/私有仓库名" value="${escapeHtml(settings.ghRepo)}" />
@@ -1844,7 +2020,6 @@ async function renderBackupCenterView() {
 
     $("#cv-backup-back").on("click", () => renderCharacterGrid());
 
-    // 刷新各分类选中计数徽章
     const updateBadges = () => {
         ["characters", "worlds", "presets", "extensions"].forEach((cat) => {
             const arr = backupCatalog[cat] || [];
@@ -1858,13 +2033,11 @@ async function renderBackupCenterView() {
         $(`.cv-master-cb[data-cat="themes"]`).prop("checked", themeChecked > 0);
     };
 
-    // 手风琴折叠切换（点击复选框本身不触发折叠）
     $body.find(".cv-acc-header").on("click", function (e) {
         if ($(e.target).is("input")) return;
         $(this).closest(".cv-acc-card").toggleClass("open");
     });
 
-    // 主分类复选框一键全选/取消
     $body.find(".cv-master-cb").on("change", function () {
         const cat = $(this).data("cat");
         const val = $(this).prop("checked");
@@ -1877,7 +2050,6 @@ async function renderBackupCenterView() {
         updateBadges();
     });
 
-    // 分类内【全选 / 全不选】小按钮
     $body.find(".cv-batch-btn").on("click", function () {
         const cat = $(this).data("cat");
         const val = Boolean(Number($(this).data("val")));
@@ -1890,7 +2062,24 @@ async function renderBackupCenterView() {
         updateBadges();
     });
 
-    // 单个子项勾选变动
+    // 仅勾选聊过的角色
+    $("#cv-btn-only-chatted").on("click", () => {
+        backupCatalog.characters.forEach((c, idx) => {
+            c.checked = Boolean(c.hasChatHistory);
+            $body.find(`.cv-item-cb[data-cat="characters"][data-idx="${idx}"]`).prop("checked", c.checked);
+        });
+        updateBadges();
+    });
+
+    // 备份页角色快速搜索过滤
+    $("#cv-char-filter-input").on("input", function () {
+        const kw = $(this).val().trim().toLowerCase();
+        $("#cv-backup-char-grid .cv-char-backup-item").each(function () {
+            const name = String($(this).data("name") || "");
+            $(this).toggle(!kw || name.includes(kw));
+        });
+    });
+
     $body.find(".cv-item-cb").on("change", function () {
         const cat = $(this).data("cat");
         const idx = Number($(this).data("idx"));
@@ -1913,7 +2102,6 @@ async function renderBackupCenterView() {
         backupCatalog.includeBoundWorldWithChar = $(this).prop("checked");
     });
 
-    // 插件 URL 手动修改实时同步到 backupCatalog 与 settings
     $body.find(".cv-ext-url-input").on("input change", function () {
         const idx = Number($(this).data("idx"));
         const name = $(this).data("extname");
@@ -1925,14 +2113,12 @@ async function renderBackupCenterView() {
         saveSettings();
     });
 
-    // 保存 GitHub 配置
     $("#cv-gh-token, #cv-gh-repo").on("change", function () {
         settings.ghToken = $("#cv-gh-token").val().trim();
         settings.ghRepo = $("#cv-gh-repo").val().trim();
         saveSettings();
     });
 
-    // 绑定导出与恢复事件
     $("#cv-export-local-btn").on("click", async () => {
         try {
             const pack = await buildSelectiveBackupPackage((msg) => $("#cv-backup-progress").text(msg));
@@ -1977,7 +2163,6 @@ async function renderBackupCenterView() {
     });
 }
 
-// 按用户精细勾选的子项构建备份包
 async function buildSelectiveBackupPackage(onProgress) {
     const settings = getSettings();
     const pack = {
@@ -1989,7 +2174,6 @@ async function buildSelectiveBackupPackage(onProgress) {
     const selectedChars = backupCatalog.characters.filter((c) => c.checked);
     const autoBoundWorldNames = new Set();
 
-    // 1. 打包选中的角色卡 + 聊天记录 + 关联世界书标记
     if (selectedChars.length > 0) {
         const charDataList = [];
         for (let i = 0; i < selectedChars.length; i++) {
@@ -2011,7 +2195,7 @@ async function buildSelectiveBackupPackage(onProgress) {
 
             const chatFiles = [];
             if (backupCatalog.includeChatsWithChar) {
-                const chatMetas = await fetchCharacterChats(c.avatar);
+                const chatMetas = await fetchCharacterChats(c.avatar, false);
                 for (const meta of chatMetas) {
                     const fName = stripFileExt(meta.file_name);
                     const rawChat = await fetchRawChatArray(c.name, c.avatar, fName);
@@ -2037,7 +2221,6 @@ async function buildSelectiveBackupPackage(onProgress) {
         };
     }
 
-    // 2. 打包世界书（用户手动勾选的世界书 + 角色自动带出的关联世界书）
     const targetWorldNames = new Set([
         ...backupCatalog.worlds.filter((w) => w.checked).map((w) => w.name),
         ...autoBoundWorldNames,
@@ -2062,7 +2245,6 @@ async function buildSelectiveBackupPackage(onProgress) {
         pack.modules.worlds = worldsData;
     }
 
-    // 3. 打包美化主题 (独立模块)
     const selectedThemes = backupCatalog.themes.filter((t) => t.checked);
     if (selectedThemes.length > 0 || backupCatalog.includeCustomCss) {
         onProgress("正在打包美化主题与 CSS...");
@@ -2076,7 +2258,6 @@ async function buildSelectiveBackupPackage(onProgress) {
         };
     }
 
-    // 4. 打包对话预设 (独立模块)
     const selectedPresets = backupCatalog.presets.filter((p) => p.checked);
     if (selectedPresets.length > 0) {
         onProgress("正在打包对话预设...");
@@ -2087,7 +2268,6 @@ async function buildSelectiveBackupPackage(onProgress) {
         };
     }
 
-    // 5. 打包选中的第三方插件清单与配置
     const selectedExts = backupCatalog.extensions.filter((e) => e.checked);
     if (selectedExts.length > 0) {
         onProgress("正在打包插件下载清单与配置...");
@@ -2114,14 +2294,10 @@ async function buildSelectiveBackupPackage(onProgress) {
     return pack;
 }
 
-// 从备份包恢复
 async function restoreFromBackupPackage(pack, onProgress) {
     if (!pack || !pack.modules) throw new Error("无效的备份文件格式");
     const mods = pack.modules;
 
-    if (!confirm("即将根据备份包恢复数据，确定继续吗？")) return;
-
-    // 1. 自动重装第三方插件
     if (mods.extensions) {
         const list = (mods.extensions.installList || []).filter((e) => e.url && e.url.startsWith("http"));
         for (let i = 0; i < list.length; i++) {
@@ -2142,7 +2318,6 @@ async function restoreFromBackupPackage(pack, onProgress) {
         }
     }
 
-    // 2. 恢复世界书（含角色自带世界书）
     if (Array.isArray(mods.worlds)) {
         for (let i = 0; i < mods.worlds.length; i++) {
             const w = mods.worlds[i];
@@ -2157,7 +2332,6 @@ async function restoreFromBackupPackage(pack, onProgress) {
         }
     }
 
-    // 3. 恢复角色卡与聊天档位
     if (mods.charactersAndChats) {
         const settings = getSettings();
         if (mods.charactersAndChats.vaultNotes) {
@@ -2208,8 +2382,7 @@ async function restoreFromBackupPackage(pack, onProgress) {
         }
     }
 
-    // 4. 恢复独立的美化主题与对话预设
-    if (mods.themes || mods.presets || mods.themesAndPresets) {
+    if (mods.themes || mods.presets) {
         onProgress("正在恢复美化主题与预设参数...");
         try {
             const res = await fetch("/api/settings/get", {
@@ -2229,7 +2402,6 @@ async function restoreFromBackupPackage(pack, onProgress) {
                             ...mods.themes.powerUserStyle,
                         };
                     }
-                    // 逐个保存主题文件
                     if (Array.isArray(mods.themes.themeItems)) {
                         for (const t of mods.themes.themeItems) {
                             if (t && t.name) {
@@ -2263,11 +2435,6 @@ async function restoreFromBackupPackage(pack, onProgress) {
                     }
                 }
 
-                // 兼容旧版全量 settingsJson
-                if (mods.themesAndPresets?.settingsJson) {
-                    Object.assign(currentSettings, mods.themesAndPresets.settingsJson);
-                }
-
                 await fetch("/api/settings/save", {
                     method: "POST",
                     headers: getRequestHeaders(),
@@ -2282,6 +2449,7 @@ async function restoreFromBackupPackage(pack, onProgress) {
     setTimeout(() => location.reload(), 1800);
 }
 
+// 采用 Git Data (Blobs / Trees / Commits) 接口突破 1MB 文件大小限制
 async function uploadBackupToGitHub(onProgress) {
     const settings = getSettings();
     const token = $("#cv-gh-token").val()?.trim() || settings.ghToken;
@@ -2293,41 +2461,68 @@ async function uploadBackupToGitHub(onProgress) {
     saveSettings();
 
     const pack = await buildSelectiveBackupPackage(onProgress);
-    onProgress("正在上传至 GitHub 私有仓库...");
+    const jsonStr = JSON.stringify(pack);
+    const ghHeaders = {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github.v3+json",
+        "Content-Type": "application/json",
+    };
 
-    const contentBase64 = btoa(unescape(encodeURIComponent(JSON.stringify(pack))));
-    const filePath = "st_vault_backup.json";
-    const apiUrl = `https://api.github.com/repos/${repo}/contents/${filePath}`;
+    onProgress(`正在上传备份数据 (${(jsonStr.length / 1024 / 1024).toFixed(2)} MB) 至 GitHub...`);
 
-    let sha = undefined;
-    const getRes = await fetch(apiUrl, {
-        headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github.v3+json" },
+    // 1. 获取仓库默认分支与最新 Commit SHA
+    const repoRes = await fetch(`https://api.github.com/repos/${repo}`, { headers: ghHeaders });
+    if (!repoRes.ok) throw new Error(`无法访问仓库 ${repo} (HTTP ${repoRes.status})`);
+    const repoInfo = await repoRes.json();
+    const branch = repoInfo.default_branch || "main";
+
+    const refRes = await fetch(`https://api.github.com/repos/${repo}/git/ref/heads/${branch}`, { headers: ghHeaders });
+    if (!refRes.ok) throw new Error(`获取分支 ${branch} 失败，请确保仓库已初始化(含README)`);
+    const refData = await refRes.json();
+    const latestCommitSha = refData.object.sha;
+
+    // 2. 创建 Git Blob (支持高达 100MB 的大文件)
+    const blobRes = await fetch(`https://api.github.com/repos/${repo}/git/blobs`, {
+        method: "POST",
+        headers: ghHeaders,
+        body: JSON.stringify({ content: jsonStr, encoding: "utf-8" }),
     });
-    if (getRes.ok) {
-        const existing = await getRes.json();
-        sha = existing.sha;
-    }
+    if (!blobRes.ok) throw new Error(`创建数据块失败 (HTTP ${blobRes.status})`);
+    const blobData = await blobRes.json();
 
-    const putRes = await fetch(apiUrl, {
-        method: "PUT",
-        headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: "application/vnd.github.v3+json",
-            "Content-Type": "application/json",
-        },
+    // 3. 创建 Git Tree
+    const treeRes = await fetch(`https://api.github.com/repos/${repo}/git/trees`, {
+        method: "POST",
+        headers: ghHeaders,
         body: JSON.stringify({
-            message: `Selective Backup via Chat Vault (${new Date().toISOString()})`,
-            content: contentBase64,
-            sha,
+            base_tree: latestCommitSha,
+            tree: [{ path: "st_vault_backup.json", mode: "100644", type: "blob", sha: blobData.sha }],
         }),
     });
+    if (!treeRes.ok) throw new Error(`创建目录树失败 (HTTP ${treeRes.status})`);
+    const treeData = await treeRes.json();
 
-    if (!putRes.ok) {
-        const errData = await putRes.json().catch(() => ({}));
-        throw new Error(errData.message || `HTTP ${putRes.status}`);
-    }
+    // 4. 创建 Commit 并更新分支引用
+    const commitRes = await fetch(`https://api.github.com/repos/${repo}/git/commits`, {
+        method: "POST",
+        headers: ghHeaders,
+        body: JSON.stringify({
+            message: `Backup via 存档管家 1.0.0 (${new Date().toISOString()})`,
+            tree: treeData.sha,
+            parents: [latestCommitSha],
+        }),
+    });
+    if (!commitRes.ok) throw new Error(`提交版本失败 (HTTP ${commitRes.status})`);
+    const commitData = await commitRes.json();
 
-    onProgress("云端同步成功！所选数据已上传至 GitHub 仓库。");
+    const updateRefRes = await fetch(`https://api.github.com/repos/${repo}/git/refs/heads/${branch}`, {
+        method: "PATCH",
+        headers: ghHeaders,
+        body: JSON.stringify({ sha: commitData.sha }),
+    });
+    if (!updateRefRes.ok) throw new Error(`更新分支指针失败 (HTTP ${updateRefRes.status})`);
+
+    onProgress("云端同步成功！数据已安全保存至 GitHub 仓库。");
     if (window.toastr) toastr.success("GitHub 云端备份成功");
 }
 
@@ -2350,7 +2545,7 @@ async function restoreBackupFromGitHub(onProgress) {
 }
 
 /* =========================================================
-   10. 全局搜索与跨档位全文定位
+   10. 全局 / 角色内双模搜索与跨档位全文定位
    ========================================================= */
 async function buildFullTextIndex(showToast = true) {
     if (isIndexing) return;
@@ -2364,7 +2559,7 @@ async function buildFullTextIndex(showToast = true) {
     for (let chid = 0; chid < chars.length; chid++) {
         const c = chars[chid];
         if (!c?.avatar) continue;
-        const chats = await fetchCharacterChats(c.avatar);
+        const chats = await fetchCharacterChats(c.avatar, false);
 
         for (const chatMeta of chats) {
             const fName = stripFileExt(chatMeta.file_name);
@@ -2388,12 +2583,38 @@ async function buildFullTextIndex(showToast = true) {
         }
     }
 
+    saveSettings();
     isIndexing = false;
     $("#cv-sub-status").text(`已索引 ${fullTextIndex.size} 档`);
     if (showToast && window.toastr) toastr.success(`全文索引完成，共收录 ${fullTextIndex.size} 个档位`);
 
     const currentKw = $("#cv-search-input").val()?.trim();
     if (currentKw) renderSearchResults(currentKw);
+}
+
+// 专门针对单个角色的所有档位快速建立索引（在角色详情页搜索时秒级响应）
+async function ensureSingleCharIndexed(chid) {
+    const ctx = getContext();
+    const c = ctx?.characters?.[chid];
+    if (!c?.avatar) return;
+    const chats = await fetchCharacterChats(c.avatar, false);
+    for (const chatMeta of chats) {
+        const fName = stripFileExt(chatMeta.file_name);
+        const key = getSlotKey(c.avatar, fName);
+        if (fullTextIndex.has(key)) continue;
+        const rawMsgs = await fetchChatMessages(c.name, c.avatar, fName);
+        fullTextIndex.set(key, {
+            chid,
+            avatar: c.avatar,
+            charName: c.name,
+            fileName: fName,
+            messages: rawMsgs.map((m, idx) => ({
+                mesid: idx,
+                name: m.name || "",
+                text: String(m.mes || ""),
+            })),
+        });
+    }
 }
 
 function highlightKeyword(text, kw) {
@@ -2411,9 +2632,16 @@ async function renderSearchResults(keyword) {
     const kwLower = keyword.toLowerCase();
     const $body = $("#cv-body-content");
 
-    const matchedChars = chars
-        .map((c, idx) => ({ chid: idx, char: c }))
-        .filter(({ char }) => char?.name?.toLowerCase().includes(kwLower));
+    const isCharScoped = searchScope === "char" && selectedCharId !== null;
+    if (isCharScoped) {
+        await ensureSingleCharIndexed(selectedCharId);
+    }
+
+    const matchedChars = isCharScoped
+        ? []
+        : chars
+              .map((c, idx) => ({ chid: idx, char: c }))
+              .filter(({ char }) => char?.name?.toLowerCase().includes(kwLower));
 
     const messageHits = [];
 
@@ -2437,6 +2665,8 @@ async function renderSearchResults(keyword) {
     }
 
     for (const [, entry] of fullTextIndex.entries()) {
+        if (isCharScoped && Number(entry.chid) !== Number(selectedCharId)) continue;
+
         const note = settings.notes[getSlotKey(entry.avatar, entry.fileName)] || "";
         if (entry.fileName.toLowerCase().includes(kwLower) || note.toLowerCase().includes(kwLower)) {
             messageHits.push({
@@ -2485,18 +2715,20 @@ async function renderSearchResults(keyword) {
 
     html += `
         <div class="cv-section-label" style="justify-content:space-between;">
-          <span>匹配的聊天楼层 (${messageHits.length}${messageHits.length >= 60 ? "+" : ""})</span>
-          <span class="cv-pill" id="cv-search-index-now" style="font-size:11px;">扫描全部历史档位</span>
+          <span>${isCharScoped ? `当前角色下匹配的楼层` : `匹配的聊天楼层`} (${messageHits.length}${messageHits.length >= 60 ? "+" : ""})</span>
+          ${!isCharScoped ? `<span class="cv-pill" id="cv-search-index-now" style="font-size:11px;">扫描全部历史档位</span>` : ""}
         </div>
     `;
 
     if (messageHits.length === 0) {
         html += `
             <div style="text-align:center;padding:28px 14px;opacity:0.8;">
-              <div style="margin-bottom:10px;">未在已缓存档位中找到「<b>${escapeHtml(keyword)}</b>」</div>
-              <button type="button" id="cv-deep-scan-btn" class="cv-pill active" style="padding:8px 16px;">
-                扫描所有角色的历史档位
-              </button>
+              <div style="margin-bottom:10px;">未找到包含「<b>${escapeHtml(keyword)}</b>」的记录</div>
+              ${
+                  isCharScoped
+                      ? `<button type="button" id="cv-switch-global-search" class="cv-pill active" style="padding:8px 16px;">切换为全局搜索所有角色</button>`
+                      : `<button type="button" id="cv-deep-scan-btn" class="cv-pill active" style="padding:8px 16px;">扫描所有角色的历史档位</button>`
+              }
             </div>
         `;
     } else {
@@ -2520,6 +2752,7 @@ async function renderSearchResults(keyword) {
         renderCharacterSlots(Number($(this).data("chid")));
     });
     $("#cv-search-index-now, #cv-deep-scan-btn").on("click", () => buildFullTextIndex(true));
+    $("#cv-switch-global-search").on("click", () => $("#cv-search-scope-btn").trigger("click"));
     $body.find(".cv-search-hit").on("click", function () {
         switchAndLocate(Number($(this).data("chid")), $(this).data("file"), Number($(this).data("mesid")));
     });
@@ -2543,7 +2776,7 @@ async function runEmptySlotCleaner() {
     for (const chid of targetChids) {
         const c = chars[chid];
         if (!c?.avatar) continue;
-        const chats = await fetchCharacterChats(c.avatar);
+        const chats = await fetchCharacterChats(c.avatar, false);
         if (chats.length <= 1) continue;
 
         const currentFile = stripFileExt(c.chat || "");
@@ -2564,21 +2797,18 @@ async function runEmptySlotCleaner() {
         return;
     }
 
-    const previewNames = emptyList.slice(0, 6).map((e) => `[${e.charName}] ${e.fileName}`).join("\n");
-    if (!confirm(`共扫描到 ${emptyList.length} 个只有 1 楼且未备注的空档位：\n\n${previewNames}\n\n确定要清理吗？`)) return;
-
     let delCount = 0;
     for (const item of emptyList) {
         if (await deleteChatFile(item.avatar, item.fileName)) delCount++;
     }
 
-    if (window.toastr) toastr.success(`已清理 ${delCount} 个空档位`);
+    if (window.toastr) toastr.success(`已清理 ${delCount} 个 1 楼空档位`);
     if (currentView === "detail" && selectedCharId !== null) renderCharacterSlots(selectedCharId);
     else renderCharacterGrid();
 }
 
 /* =========================================================
-   12. 插件启动入口
+   12. 插件启动入口（零侵入式启动，不干渉酒馆原生首页）
    ========================================================= */
 jQuery(() => {
     injectMasterStyles();
@@ -2659,11 +2889,4 @@ jQuery(() => {
     $("#extensionsMenu").append($wandItem);
 
     initFloatingBall();
-
-    eventSource.on(event_types.CHAT_CHANGED, () => {
-        const ctx = getContext();
-        if (ctx?.characterId !== undefined && ctx.characters?.[ctx.characterId]) {
-            ctx.characters[ctx.characterId].date_last_chat = Date.now();
-        }
-    });
 });
