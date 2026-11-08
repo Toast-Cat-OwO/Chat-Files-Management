@@ -14,27 +14,36 @@ const defaultSettings = {
     enableFab: true,
     themeMode: "inherit", // inherit | dark | light
     gridCols: 2,          // 2 | 3
-    fabPos: { top: "68%", left: "calc(100% - 58px)", dock: "right" },
+    fabPos: { top: "68%", left: "calc(100% - 56px)", dock: "right" },
     notes: {},
     pinned: [],
     chatCounts: {},
+    customExtUrls: {},    // 用户手动补充或缓存的插件 GitHub 地址
+    ghToken: "",          // GitHub Personal Access Token
+    ghRepo: "",           // 格式: username/repo
+    ghBranch: "main",
+    backupSelection: {
+        charactersAndChats: true,
+        worlds: true,
+        themesAndPresets: true,
+        extensions: true,
+    },
 };
 
 const fullTextIndex = new Map();
 let isIndexing = false;
-let currentView = "grid";
+let currentView = "grid"; // grid | detail | search | backup
 let selectedCharId = null;
 let currentFilter = "recent";
 
 /* =========================================================
-   0. 动态吸取酒馆当前第三方美化包样式 + 内嵌 CSS
+   0. 动态吸取酒馆美化包样式 + 极简现代 UI 样式表
    ========================================================= */
 function syncTavernBeauty() {
     const root = document.documentElement;
     const bodyStyle = getComputedStyle(document.body);
     const rootStyle = getComputedStyle(root);
 
-    // 寻找酒馆内已经被美化包渲染的核心面板（抽屉、聊天窗、顶部栏）
     const sampleDrawer =
         document.querySelector(".drawer-content") ||
         document.querySelector("#sheld") ||
@@ -42,21 +51,18 @@ function syncTavernBeauty() {
         document.body;
     const drawerStyle = getComputedStyle(sampleDrawer);
 
-    // 1. 提取背景色（优先取 CSS 变量，若为空或全透明则取抽屉真实背景色）
     let bg =
         rootStyle.getPropertyValue("--SmartThemeBlurTintColor").trim() ||
         drawerStyle.backgroundColor;
     if (!bg || bg === "rgba(0, 0, 0, 0)" || bg === "transparent") {
-        bg = bodyStyle.backgroundColor || "rgba(28, 28, 36, 0.85)";
+        bg = bodyStyle.backgroundColor || "rgba(24, 25, 32, 0.88)";
     }
 
-    // 2. 提取背景图片/渐变（有些美化老师用渐变做面板底色）
     const bgImage =
         drawerStyle.backgroundImage && drawerStyle.backgroundImage !== "none"
             ? drawerStyle.backgroundImage
             : "none";
 
-    // 3. 提取文字颜色、强调色、引用色、边框色、字体
     const textColor =
         rootStyle.getPropertyValue("--SmartThemeBodyColor").trim() ||
         drawerStyle.color ||
@@ -69,28 +75,22 @@ function syncTavernBeauty() {
 
     const quoteColor =
         rootStyle.getPropertyValue("--SmartThemeQuoteColor").trim() ||
-        "#7aa2f7";
+        "#6366f1";
 
     const borderColor =
         rootStyle.getPropertyValue("--SmartThemeBorderColor").trim() ||
         drawerStyle.borderColor ||
-        "rgba(150, 150, 160, 0.28)";
+        "rgba(160, 160, 175, 0.22)";
 
     const blurStrength =
         rootStyle.getPropertyValue("--SmartThemeBlurStrength").trim() ||
-        "14px";
+        "16px";
 
     const fontFamily =
         rootStyle.getPropertyValue("--mainFontFamily").trim() ||
         bodyStyle.fontFamily ||
-        "sans-serif";
+        "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
 
-    const boxShadow =
-        drawerStyle.boxShadow && drawerStyle.boxShadow !== "none"
-            ? drawerStyle.boxShadow
-            : "0 -8px 32px rgba(0, 0, 0, 0.45)";
-
-    // 将吸取到的真实美化参数写入插件动态变量
     root.style.setProperty("--cv-inherit-bg", bg);
     root.style.setProperty("--cv-inherit-bg-img", bgImage);
     root.style.setProperty("--cv-inherit-text", textColor);
@@ -99,7 +99,6 @@ function syncTavernBeauty() {
     root.style.setProperty("--cv-inherit-border", borderColor);
     root.style.setProperty("--cv-inherit-blur", blurStrength);
     root.style.setProperty("--cv-inherit-font", fontFamily);
-    root.style.setProperty("--cv-inherit-shadow", boxShadow);
 }
 
 function injectMasterStyles() {
@@ -108,81 +107,75 @@ function injectMasterStyles() {
     const styleEl = document.createElement("style");
     styleEl.id = "cv-master-styles";
     styleEl.textContent = `
-      /* 默认跟随酒馆美化变量 */
       #cv-modal-overlay, #cv-quick-sheet, #cv-fab {
-        --cv-bg: var(--cv-inherit-bg, var(--SmartThemeBlurTintColor, rgba(28, 28, 36, 0.86)));
+        --cv-bg: var(--cv-inherit-bg, rgba(24, 25, 32, 0.9));
         --cv-bg-img: var(--cv-inherit-bg-img, none);
-        --cv-blur: var(--cv-inherit-blur, var(--SmartThemeBlurStrength, 14px));
-        --cv-text: var(--cv-inherit-text, var(--SmartThemeBodyColor, #f3f4f6));
-        --cv-em: var(--cv-inherit-em, var(--SmartThemeEmColor, #ffb86c));
-        --cv-accent: var(--cv-inherit-accent, var(--SmartThemeQuoteColor, #7aa2f7));
-        --cv-border: var(--cv-inherit-border, var(--SmartThemeBorderColor, rgba(160, 160, 175, 0.25)));
-        --cv-card-bg: color-mix(in srgb, var(--cv-text) 8%, transparent);
-        --cv-font: var(--cv-inherit-font, var(--mainFontFamily, sans-serif));
-        --cv-shadow: var(--cv-inherit-shadow, 0 -8px 32px rgba(0, 0, 0, 0.45));
+        --cv-blur: var(--cv-inherit-blur, 16px);
+        --cv-text: var(--cv-inherit-text, #f3f4f6);
+        --cv-em: var(--cv-inherit-em, #ffffff);
+        --cv-accent: var(--cv-inherit-accent, #6366f1);
+        --cv-border: var(--cv-inherit-border, rgba(160, 160, 175, 0.2));
+        --cv-card-bg: color-mix(in srgb, var(--cv-text) 6%, transparent);
+        --cv-card-hover: color-mix(in srgb, var(--cv-text) 10%, transparent);
+        --cv-font: var(--cv-inherit-font, sans-serif);
       }
 
-      /* 独立暗黑模式 */
       .cv-theme-dark {
-        --cv-bg: rgba(18, 19, 26, 0.94) !important;
+        --cv-bg: rgba(17, 18, 24, 0.95) !important;
         --cv-bg-img: none !important;
-        --cv-text: #f3f4f6 !important;
-        --cv-em: #fbbf24 !important;
-        --cv-accent: #60a5fa !important;
-        --cv-border: rgba(255, 255, 255, 0.14) !important;
-        --cv-card-bg: rgba(255, 255, 255, 0.07) !important;
+        --cv-text: #e5e7eb !important;
+        --cv-em: #ffffff !important;
+        --cv-accent: #6366f1 !important;
+        --cv-border: rgba(255, 255, 255, 0.1) !important;
+        --cv-card-bg: rgba(255, 255, 255, 0.05) !important;
       }
 
-      /* 独立浅色模式 */
       .cv-theme-light {
-        --cv-bg: rgba(250, 250, 253, 0.94) !important;
+        --cv-bg: rgba(250, 251, 254, 0.95) !important;
         --cv-bg-img: none !important;
         --cv-text: #1f2937 !important;
-        --cv-em: #d97706 !important;
-        --cv-accent: #ec4899 !important;
-        --cv-border: rgba(0, 0, 0, 0.12) !important;
-        --cv-card-bg: rgba(0, 0, 0, 0.05) !important;
+        --cv-em: #111827 !important;
+        --cv-accent: #4f46e5 !important;
+        --cv-border: rgba(0, 0, 0, 0.1) !important;
+        --cv-card-bg: rgba(0, 0, 0, 0.04) !important;
       }
 
-      /* 悬浮球完全跟随美化配色与毛玻璃 */
+      /* 极简悬浮球 */
       #cv-fab {
         position: fixed !important;
         z-index: 2147483640 !important;
-        width: 46px !important;
-        height: 46px !important;
-        border-radius: 50% !important;
+        width: 44px !important;
+        height: 44px !important;
+        border-radius: 14px !important;
         background-color: var(--cv-bg) !important;
         background-image: var(--cv-bg-img) !important;
         backdrop-filter: blur(var(--cv-blur)) !important;
         -webkit-backdrop-filter: blur(var(--cv-blur)) !important;
-        border: 1.5px solid var(--cv-border) !important;
+        border: 1px solid var(--cv-border) !important;
         color: var(--cv-text) !important;
         display: flex !important;
         align-items: center !important;
         justify-content: center !important;
-        font-size: 20px !important;
-        box-shadow: var(--cv-shadow) !important;
+        font-size: 17px !important;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28) !important;
         touch-action: none !important;
         user-select: none !important;
         -webkit-user-select: none !important;
         cursor: pointer !important;
         transition: opacity 0.3s ease, transform 0.2s ease;
       }
-      #cv-fab.cv-idle { opacity: 0.42 !important; }
-      #cv-fab.cv-idle.cv-dock-left { transform: translateX(-12px); }
-      #cv-fab.cv-idle.cv-dock-right { transform: translateX(12px); }
+      #cv-fab.cv-idle { opacity: 0.38 !important; }
+      #cv-fab.cv-idle.cv-dock-left { transform: translateX(-10px); }
+      #cv-fab.cv-idle.cv-dock-right { transform: translateX(10px); }
 
-      /* 遮罩层轻微暗化，保留底下酒馆美化的背景壁纸通透感 */
+      /* 模态遮罩 */
       #cv-modal-overlay, #cv-quick-sheet {
         position: fixed !important;
-        top: 0 !important;
-        left: 0 !important;
-        right: 0 !important;
-        bottom: 0 !important;
+        inset: 0 !important;
         width: 100vw !important;
         height: 100vh !important;
         z-index: 2147483645 !important;
-        background: rgba(0, 0, 0, 0.38) !important;
+        background: rgba(0, 0, 0, 0.42) !important;
         display: flex !important;
         align-items: flex-end !important;
         justify-content: center !important;
@@ -193,48 +186,48 @@ function injectMasterStyles() {
         #cv-modal-overlay { align-items: center !important; }
       }
 
-      /* 弹窗主面板：继承酒馆美化背景、毛玻璃、边框、字体 */
+      /* 主面板容器 */
       .cv-modal-container {
         width: 100% !important;
-        max-width: 680px !important;
+        max-width: 660px !important;
         height: 88vh !important;
         background-color: var(--cv-bg) !important;
         background-image: var(--cv-bg-img) !important;
         backdrop-filter: blur(var(--cv-blur)) !important;
         -webkit-backdrop-filter: blur(var(--cv-blur)) !important;
-        border: 1.5px solid var(--cv-border) !important;
-        border-radius: 22px 22px 0 0 !important;
+        border: 1px solid var(--cv-border) !important;
+        border-radius: 20px 20px 0 0 !important;
         display: flex !important;
         flex-direction: column !important;
         overflow: hidden !important;
-        box-shadow: var(--cv-shadow) !important;
+        box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.35) !important;
         color: var(--cv-text) !important;
-        font-family: var(--cv-font) !important;
       }
       @media (min-width: 768px) {
         .cv-modal-container {
-          height: 84vh !important;
-          border-radius: 20px !important;
+          height: 82vh !important;
+          border-radius: 18px !important;
         }
       }
 
+      /* 快捷切档抽屉 */
       .cv-quick-box {
         width: 100% !important;
-        max-width: 520px !important;
-        max-height: 72vh !important;
+        max-width: 500px !important;
+        max-height: 70vh !important;
         background-color: var(--cv-bg) !important;
         background-image: var(--cv-bg-img) !important;
         backdrop-filter: blur(var(--cv-blur)) !important;
         -webkit-backdrop-filter: blur(var(--cv-blur)) !important;
-        border-top: 1.5px solid var(--cv-border) !important;
+        border-top: 1px solid var(--cv-border) !important;
         border-radius: 20px 20px 0 0 !important;
-        padding: 16px !important;
+        padding: 18px 16px !important;
         color: var(--cv-text) !important;
         overflow-y: auto !important;
       }
       .cv-quick-item {
-        padding: 10px 12px;
-        border-radius: 10px;
+        padding: 11px 14px;
+        border-radius: 12px;
         background: var(--cv-card-bg);
         border: 1px solid var(--cv-border);
         margin-bottom: 8px;
@@ -242,37 +235,41 @@ function injectMasterStyles() {
         justify-content: space-between;
         align-items: center;
         cursor: pointer;
+        transition: background 0.15s;
       }
+
+      /* 顶部导航与搜索栏 */
       .cv-header {
-        padding: 12px 14px 8px;
+        padding: 14px 16px 10px;
         border-bottom: 1px solid var(--cv-border);
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 10px;
         flex-shrink: 0;
       }
       .cv-top-bar {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 6px;
+        gap: 8px;
       }
       .cv-title {
-        font-size: 16px;
-        font-weight: 700;
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.2px;
         color: var(--cv-em);
         display: flex;
         align-items: center;
-        gap: 6px;
+        gap: 8px;
       }
       .cv-search-wrap {
         display: flex;
         align-items: center;
         background: var(--cv-card-bg);
         border: 1px solid var(--cv-border);
-        border-radius: 12px;
-        padding: 4px 10px;
-        gap: 6px;
+        border-radius: 10px;
+        padding: 3px 12px;
+        gap: 8px;
       }
       .cv-search-wrap input {
         flex: 1;
@@ -280,26 +277,29 @@ function injectMasterStyles() {
         border: none !important;
         color: var(--cv-text) !important;
         font-family: var(--cv-font) !important;
-        font-size: 14px !important;
+        font-size: 13.5px !important;
         outline: none !important;
         padding: 6px 0 !important;
       }
       .cv-search-wrap input::placeholder {
         color: var(--cv-text) !important;
-        opacity: 0.55 !important;
+        opacity: 0.48 !important;
       }
+
+      /* 极简胶囊按钮 */
       .cv-filter-row {
         display: flex;
         gap: 6px;
         overflow-x: auto;
-        padding-bottom: 4px;
+        padding-bottom: 2px;
         scrollbar-width: none;
       }
       .cv-filter-row::-webkit-scrollbar { display: none; }
       .cv-pill {
-        padding: 5px 10px;
-        border-radius: 999px;
+        padding: 5px 11px;
+        border-radius: 8px;
         font-size: 12px;
+        font-weight: 500;
         white-space: nowrap;
         background: var(--cv-card-bg);
         border: 1px solid var(--cv-border);
@@ -307,30 +307,35 @@ function injectMasterStyles() {
         cursor: pointer;
         display: inline-flex;
         align-items: center;
-        gap: 4px;
+        gap: 5px;
         transition: all 0.15s ease;
       }
+      .cv-pill:hover { background: var(--cv-card-hover); }
       .cv-pill.active {
         background: var(--cv-accent) !important;
         color: #fff !important;
         border-color: var(--cv-accent) !important;
-        font-weight: 600;
       }
+
+      /* 内容滚动区 */
       .cv-body {
         flex: 1;
         overflow-y: auto;
-        padding: 12px 14px 32px;
+        padding: 14px 16px 32px;
         -webkit-overflow-scrolling: touch;
       }
-      .cv-pinned-bar { margin-bottom: 14px; }
+
+      /* 置顶栏 */
+      .cv-pinned-bar { margin-bottom: 16px; }
       .cv-section-label {
         font-size: 12px;
+        font-weight: 600;
         color: var(--cv-em);
-        opacity: 0.9;
-        margin-bottom: 6px;
+        opacity: 0.75;
+        margin-bottom: 8px;
         display: flex;
         align-items: center;
-        gap: 4px;
+        gap: 6px;
       }
       .cv-pinned-list {
         display: flex;
@@ -340,41 +345,46 @@ function injectMasterStyles() {
       }
       .cv-pin-chip {
         flex-shrink: 0;
-        max-width: 200px;
-        padding: 7px 10px;
-        border-radius: 12px;
+        max-width: 210px;
+        padding: 8px 12px;
+        border-radius: 10px;
         background: var(--cv-card-bg);
-        border: 1px solid var(--cv-accent);
+        border: 1px solid var(--cv-border);
         cursor: pointer;
         font-size: 12px;
       }
       .cv-pin-chip-title {
-        font-weight: 700;
+        font-weight: 600;
         color: var(--cv-em);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
       .cv-pin-chip-sub {
-        opacity: 0.8;
+        opacity: 0.65;
         font-size: 11px;
+        margin-top: 2px;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
+
+      /* 角色海报网格 */
       .cv-char-grid { display: grid; gap: 12px; }
       .cv-char-grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .cv-char-grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .cv-char-card {
         position: relative;
-        aspect-ratio: 3 / 4.2;
-        border-radius: 14px;
+        aspect-ratio: 3 / 4.1;
+        border-radius: 12px;
         overflow: hidden;
-        border: 1.5px solid var(--cv-border);
+        border: 1px solid var(--cv-border);
         background: var(--cv-card-bg);
         cursor: pointer;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+        transition: transform 0.15s ease;
       }
+      .cv-char-card:active { transform: scale(0.97); }
       .cv-char-card img {
         width: 100%;
         height: 100%;
@@ -385,58 +395,60 @@ function injectMasterStyles() {
         position: absolute;
         top: 8px;
         right: 8px;
-        background: var(--cv-bg);
-        backdrop-filter: blur(8px);
-        -webkit-backdrop-filter: blur(8px);
-        color: var(--cv-text);
+        background: rgba(15, 16, 22, 0.68);
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+        color: #fff;
         font-size: 11px;
-        font-weight: 600;
-        padding: 3px 8px;
-        border-radius: 999px;
-        border: 1px solid var(--cv-border);
+        font-weight: 500;
+        padding: 2px 8px;
+        border-radius: 6px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
       }
       .cv-char-footer {
         position: absolute;
         left: 0; right: 0; bottom: 0;
-        padding: 20px 10px 8px;
-        background: linear-gradient(to top, rgba(0,0,0,0.88) 0%, rgba(0,0,0,0.5) 65%, transparent 100%);
+        padding: 24px 10px 9px;
+        background: linear-gradient(to top, rgba(0,0,0,0.86) 0%, rgba(0,0,0,0.45) 65%, transparent 100%);
         color: #fff;
       }
       .cv-char-name {
-        font-size: 14px;
-        font-weight: 700;
+        font-size: 13.5px;
+        font-weight: 600;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      .cv-char-time { font-size: 11px; opacity: 0.85; margin-top: 2px; }
+      .cv-char-time { font-size: 11px; opacity: 0.75; margin-top: 2px; }
+
+      /* 档位详情卡片 */
       .cv-detail-header {
         display: flex;
         align-items: center;
         gap: 10px;
-        margin-bottom: 12px;
+        margin-bottom: 14px;
         padding-bottom: 10px;
         border-bottom: 1px solid var(--cv-border);
       }
       .cv-detail-avatar {
-        width: 48px;
-        height: 48px;
-        border-radius: 12px;
+        width: 44px;
+        height: 44px;
+        border-radius: 10px;
         object-fit: cover;
-        border: 1.5px solid var(--cv-accent);
+        border: 1px solid var(--cv-border);
       }
       .cv-slot-card {
         background: var(--cv-card-bg);
         border: 1px solid var(--cv-border);
-        border-radius: 14px;
-        padding: 12px;
+        border-radius: 12px;
+        padding: 12px 14px;
         margin-bottom: 10px;
         display: flex;
         flex-direction: column;
         gap: 8px;
       }
       .cv-slot-card.current-slot {
-        border: 1.5px solid var(--cv-accent);
+        border-color: var(--cv-accent);
       }
       .cv-slot-top {
         display: flex;
@@ -445,26 +457,27 @@ function injectMasterStyles() {
         gap: 8px;
         cursor: pointer;
       }
-      .cv-slot-title { font-weight: 700; font-size: 14px; color: var(--cv-em); word-break: break-all; }
+      .cv-slot-title { font-weight: 600; font-size: 13.5px; color: var(--cv-em); word-break: break-all; }
       .cv-slot-note-tag {
         display: inline-block;
         background: var(--cv-accent);
         color: #fff;
         font-size: 11px;
-        padding: 2px 7px;
-        border-radius: 6px;
+        padding: 1px 6px;
+        border-radius: 5px;
         margin-right: 6px;
-        font-weight: 600;
+        font-weight: 500;
       }
-      .cv-slot-meta { font-size: 11px; opacity: 0.8; display: flex; flex-wrap: wrap; gap: 8px; }
+      .cv-slot-meta { font-size: 11.5px; opacity: 0.68; display: flex; flex-wrap: wrap; gap: 12px; }
       .cv-slot-preview {
         font-size: 12.5px;
-        opacity: 0.92;
-        background: var(--cv-card-bg);
+        opacity: 0.88;
+        background: color-mix(in srgb, var(--cv-text) 4%, transparent);
         border: 1px solid var(--cv-border);
         padding: 8px 10px;
         border-radius: 8px;
         cursor: pointer;
+        line-height: 1.45;
       }
       .cv-slot-actions {
         display: flex;
@@ -472,23 +485,28 @@ function injectMasterStyles() {
         justify-content: flex-end;
         flex-wrap: wrap;
         padding-top: 6px;
-        border-top: 1px dashed var(--cv-border);
+        border-top: 1px solid var(--cv-border);
       }
       .cv-btn-sm {
-        padding: 5px 10px;
-        border-radius: 8px;
-        font-size: 12px;
+        padding: 4px 10px;
+        border-radius: 6px;
+        font-size: 11.5px;
         background: var(--cv-card-bg);
         border: 1px solid var(--cv-border);
         color: var(--cv-text);
         cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
       }
       .cv-btn-sm.primary { background: var(--cv-accent); color: #fff; border-color: transparent; }
-      .cv-btn-sm.danger { color: #f87171; }
+      .cv-btn-sm.danger { color: #ef4444; }
+
+      /* 搜索结果 */
       .cv-search-hit {
         background: var(--cv-card-bg);
         border: 1px solid var(--cv-border);
-        border-radius: 12px;
+        border-radius: 10px;
         padding: 10px 12px;
         margin-bottom: 8px;
         cursor: pointer;
@@ -502,13 +520,85 @@ function injectMasterStyles() {
         color: var(--cv-em);
         font-weight: 600;
       }
-      .cv-hit-snippet { font-size: 13px; line-height: 1.45; word-break: break-word; }
-      .cv-highlight-kw { background: #facc15; color: #000; font-weight: 700; padding: 0 3px; border-radius: 3px; }
+      .cv-hit-snippet { font-size: 12.5px; line-height: 1.45; word-break: break-word; opacity: 0.9; }
+      .cv-highlight-kw { background: rgba(250, 204, 21, 0.85); color: #000; font-weight: 600; padding: 0 3px; border-radius: 3px; }
+
+      /* 备份中心卡片与勾选框 */
+      .cv-backup-card {
+        background: var(--cv-card-bg);
+        border: 1px solid var(--cv-border);
+        border-radius: 12px;
+        padding: 14px;
+        margin-bottom: 12px;
+      }
+      .cv-backup-title {
+        font-size: 13.5px;
+        font-weight: 600;
+        color: var(--cv-em);
+        margin-bottom: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .cv-check-item {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--cv-border);
+        margin-bottom: 8px;
+        cursor: pointer;
+      }
+      .cv-check-item input[type="checkbox"] {
+        margin-top: 3px;
+        width: 15px;
+        height: 15px;
+      }
+      .cv-input-field {
+        width: 100%;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--cv-border);
+        background: color-mix(in srgb, var(--cv-text) 4%, transparent);
+        color: var(--cv-text);
+        font-size: 12.5px;
+        margin-top: 4px;
+        outline: none;
+      }
+      .cv-action-row {
+        display: flex;
+        gap: 8px;
+        margin-top: 10px;
+        flex-wrap: wrap;
+      }
+      .cv-btn-block {
+        flex: 1;
+        min-width: 130px;
+        padding: 9px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--cv-border);
+        background: var(--cv-card-bg);
+        color: var(--cv-text);
+        font-size: 12.5px;
+        font-weight: 600;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+      }
+      .cv-btn-block.primary {
+        background: var(--cv-accent);
+        color: #fff;
+        border-color: transparent;
+      }
+
       @keyframes cvFlashMessage {
         0%, 100% { box-shadow: none; }
-        25%, 75% { box-shadow: 0 0 0 3px var(--cv-accent), 0 0 18px var(--cv-accent); }
+        25%, 75% { box-shadow: 0 0 0 2px var(--cv-accent), 0 0 14px var(--cv-accent); }
       }
-      .cv-target-message-flash { animation: cvFlashMessage 2.4s ease-in-out; border-radius: 10px; }
+      .cv-target-message-flash { animation: cvFlashMessage 2.4s ease-in-out; border-radius: 8px; }
     `;
     document.head.appendChild(styleEl);
 }
@@ -522,6 +612,11 @@ function getSettings() {
         ...defaultSettings,
         ...extension_settings[EXT_NAME],
     });
+    extension_settings[EXT_NAME].backupSelection = {
+        ...defaultSettings.backupSelection,
+        ...(extension_settings[EXT_NAME].backupSelection || {}),
+    };
+    extension_settings[EXT_NAME].customExtUrls = extension_settings[EXT_NAME].customExtUrls || {};
     return extension_settings[EXT_NAME];
 }
 
@@ -556,17 +651,17 @@ function getSafeAvatarUrl(avatarFile) {
 }
 
 function getThemeLabel(mode) {
-    if (mode === "dark") return "🌙 暗黑";
-    if (mode === "light") return "☀️ 浅色";
-    return "🔗 跟随美化";
+    if (mode === "dark") return "深色";
+    if (mode === "light") return "浅色";
+    return "跟随美化";
 }
 
 function syncFabToggleUI() {
     const settings = getSettings();
     $("#cv_enable_fab").prop("checked", settings.enableFab);
     $("#cv_theme_mode").val(settings.themeMode);
-    $("#cv-toggle-fab-inline").html(settings.enableFab ? "👁️ 隐藏球" : "🟢 开启球");
-    $("#cv-cycle-theme-inline").html(getThemeLabel(settings.themeMode));
+    $("#cv-toggle-fab-inline").text(settings.enableFab ? "隐藏悬浮球" : "开启悬浮球");
+    $("#cv-cycle-theme-inline").text(getThemeLabel(settings.themeMode));
 }
 
 function applyThemeClass($el) {
@@ -575,6 +670,25 @@ function applyThemeClass($el) {
     $el.removeClass("cv-theme-dark cv-theme-light");
     if (mode === "dark") $el.addClass("cv-theme-dark");
     if (mode === "light") $el.addClass("cv-theme-light");
+}
+
+function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
+}
+
+function base64ToBlob(dataUrl) {
+    const arr = dataUrl.split(",");
+    const mime = arr[0].match(/:(.*?);/)?.[1] || "image/png";
+    const bstr = atob(arr[1]);
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    while (n--) u8arr[n] = bstr.charCodeAt(n);
+    return new Blob([u8arr], { type: mime });
 }
 
 /* =========================================================
@@ -598,7 +712,7 @@ async function fetchCharacterChats(avatarUrl) {
     }
 }
 
-async function fetchChatMessages(charName, avatarUrl, fileName) {
+async function fetchRawChatArray(charName, avatarUrl, fileName) {
     try {
         const cleanName = stripFileExt(fileName);
         const res = await fetch("/api/chats/get", {
@@ -612,10 +726,15 @@ async function fetchChatMessages(charName, avatarUrl, fileName) {
         });
         if (!res.ok) return [];
         const data = await res.json();
-        return Array.isArray(data) ? data.filter((m) => m && typeof m.mes === "string") : [];
+        return Array.isArray(data) ? data : [];
     } catch (e) {
         return [];
     }
+}
+
+async function fetchChatMessages(charName, avatarUrl, fileName) {
+    const data = await fetchRawChatArray(charName, avatarUrl, fileName);
+    return data.filter((m) => m && typeof m.mes === "string");
 }
 
 async function deleteChatFile(avatarUrl, fileName) {
@@ -646,18 +765,9 @@ async function renameChatFile(avatarUrl, oldFileName, newFileName) {
 async function cloneChatFile(charName, avatarUrl, fileName) {
     try {
         const cleanName = stripFileExt(fileName);
-        const res = await fetch("/api/chats/get", {
-            method: "POST",
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                ch_name: charName,
-                file_name: cleanName,
-                avatar_url: avatarUrl,
-            }),
-        });
-        if (!res.ok) return false;
-        const rawChatArray = await res.json();
-        const newFileName = `${cleanName}_备份_${new Date().toTimeString().slice(0, 5).replace(":", "")}`;
+        const rawChatArray = await fetchRawChatArray(charName, avatarUrl, cleanName);
+        if (!rawChatArray.length) return false;
+        const newFileName = `${cleanName}_backup_${new Date().toTimeString().slice(0, 5).replace(":", "")}`;
         const saveRes = await fetch("/api/chats/save", {
             method: "POST",
             headers: getRequestHeaders(),
@@ -682,7 +792,7 @@ async function switchAndLocate(chid, fileName, targetMesId = null) {
     const cleanFile = stripFileExt(fileName);
 
     $("#cv-modal-overlay, #cv-quick-sheet").remove();
-    if (window.toastr) toastr.info(`正在切换至档位：${cleanFile}...`);
+    if (window.toastr) toastr.info(`正在切换档位：${cleanFile}`);
 
     if (String(ctx.characterId) !== String(chid)) {
         await selectCharacterById(String(chid));
@@ -712,13 +822,13 @@ function scrollToMessageFloor(mesId) {
             setTimeout(() => $msg.removeClass("cv-target-message-flash"), 2600);
         } else if (attempts >= 12) {
             clearInterval(timer);
-            if (window.toastr) toastr.warning(`已进入档位，目标在第 #${mesId} 楼（如楼层较早请向上滑动加载）`);
+            if (window.toastr) toastr.warning(`已进入档位，目标在第 #${mesId} 楼`);
         }
     }, 250);
 }
 
 /* =========================================================
-   4. 手机/电脑全兼容悬浮球
+   4. 极简悬浮球
    ========================================================= */
 function initFloatingBall() {
     injectMasterStyles();
@@ -732,9 +842,9 @@ function initFloatingBall() {
 
     const fabEl = document.createElement("div");
     fabEl.id = "cv-fab";
-    fabEl.innerHTML = "🗂️";
+    fabEl.innerHTML = `<i class="fa-solid fa-layer-group"></i>`;
     fabEl.style.top = settings.fabPos.top || "68%";
-    fabEl.style.left = settings.fabPos.left || "calc(100% - 58px)";
+    fabEl.style.left = settings.fabPos.left || "calc(100% - 56px)";
     fabEl.className = settings.fabPos.dock === "left" ? "cv-dock-left" : "cv-dock-right";
     if (settings.themeMode === "dark") fabEl.classList.add("cv-theme-dark");
     if (settings.themeMode === "light") fabEl.classList.add("cv-theme-light");
@@ -776,7 +886,7 @@ function initFloatingBall() {
                 isDown = false;
                 openQuickSwitchSheet();
             }
-        }, 620);
+        }, 600);
     });
 
     fabEl.addEventListener("pointermove", (e) => {
@@ -786,8 +896,8 @@ function initFloatingBall() {
         if (Math.abs(dx) > 12 || Math.abs(dy) > 12) {
             hasMoved = true;
             clearTimeout(lpTimer);
-            const newLeft = Math.max(6, Math.min(window.innerWidth - 54, startLeft + dx));
-            const newTop = Math.max(10, Math.min(window.innerHeight - 56, startTop + dy));
+            const newLeft = Math.max(6, Math.min(window.innerWidth - 50, startLeft + dx));
+            const newTop = Math.max(10, Math.min(window.innerHeight - 54, startTop + dy));
             fabEl.style.transition = "none";
             fabEl.style.left = `${newLeft}px`;
             fabEl.style.top = `${newTop}px`;
@@ -804,7 +914,7 @@ function initFloatingBall() {
         if (hasMoved) {
             const rect = fabEl.getBoundingClientRect();
             const isLeft = rect.left + rect.width / 2 < window.innerWidth / 2;
-            const dockLeft = isLeft ? "8px" : `${window.innerWidth - 56}px`;
+            const dockLeft = isLeft ? "8px" : `${window.innerWidth - 52}px`;
             const dockSide = isLeft ? "left" : "right";
 
             fabEl.classList.remove("cv-dock-left", "cv-dock-right");
@@ -835,8 +945,8 @@ async function openQuickSwitchSheet() {
         <div id="cv-quick-sheet">
           <div class="cv-quick-box">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-              <b>⚡ 快捷切档 ${char ? `- ${escapeHtml(char.name)}` : ""}</b>
-              <span class="cv-pill" id="cv-quick-open-full">打开完整管家 ➔</span>
+              <b>快捷切档 ${char ? `· ${escapeHtml(char.name)}` : ""}</b>
+              <span class="cv-pill" id="cv-quick-open-full">进入主面板</span>
             </div>
             <div id="cv-quick-list">正在读取档位...</div>
           </div>
@@ -854,7 +964,7 @@ async function openQuickSwitchSheet() {
     });
 
     if (chid === undefined || !char) {
-        $("#cv-quick-list").html(`<div style="opacity:0.7;padding:10px 0;">当前未选中角色，请点击右上角打开完整管家。</div>`);
+        $("#cv-quick-list").html(`<div style="opacity:0.7;padding:10px 0;">当前未选中角色，请点击右上角进入主面板。</div>`);
         return;
     }
 
@@ -873,13 +983,13 @@ async function openQuickSwitchSheet() {
         return `
             <div class="cv-quick-item" data-file="${escapeHtml(fName)}">
               <div style="min-width:0;flex:1;">
-                <div style="font-weight:700;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                <div style="font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
                   ${note ? `<span class="cv-slot-note-tag">${escapeHtml(note)}</span>` : ""}
                   ${escapeHtml(fName)}
                 </div>
-                <div style="font-size:11px;opacity:0.75;">💬 ${c.chat_items || "?"} 楼 · ${escapeHtml(c.last_mes || "")}</div>
+                <div style="font-size:11px;opacity:0.68;margin-top:2px;">${c.chat_items || "?"} 楼 · ${escapeHtml(c.last_mes || "")}</div>
               </div>
-              <span class="cv-pill ${isCur ? "active" : ""}">${isCur ? "当前档位" : "切换"}</span>
+              <span class="cv-pill ${isCur ? "active" : ""}">${isCur ? "当前" : "切换"}</span>
             </div>
         `;
     }).join("");
@@ -891,7 +1001,7 @@ async function openQuickSwitchSheet() {
 }
 
 /* =========================================================
-   6. 主弹窗渲染与视图切换（实时同步美化 + 顶部一键切主题）
+   6. 主面板渲染与视图导航
    ========================================================= */
 async function openMainModal() {
     try {
@@ -901,6 +1011,7 @@ async function openMainModal() {
 
         const settings = getSettings();
         currentView = "grid";
+        selectedCharId = null;
 
         const $modal = $(`
             <div id="cv-modal-overlay">
@@ -908,34 +1019,36 @@ async function openMainModal() {
                 <div class="cv-header">
                   <div class="cv-top-bar">
                     <div class="cv-title">
-                      <span>🗂️ 存档管家</span>
-                      <span id="cv-sub-status" style="font-size:11px;opacity:0.7;font-weight:normal;"></span>
+                      <i class="fa-solid fa-layer-group"></i>
+                      <span>存档管家</span>
+                      <span id="cv-sub-status" style="font-size:11px;opacity:0.65;font-weight:normal;"></span>
                     </div>
-                    <div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;">
-                      <span class="cv-pill" id="cv-cycle-theme-inline" title="点击切换主题模式">${getThemeLabel(settings.themeMode)}</span>
-                      <span class="cv-pill" id="cv-toggle-fab-inline">${settings.enableFab ? "👁️ 隐藏球" : "🟢 开启球"}</span>
-                      <span class="cv-pill" id="cv-toggle-cols">📱 ${settings.gridCols}列</span>
-                      <span class="cv-pill" id="cv-clean-empty-btn">🧹 清废档</span>
-                      <span class="cv-pill" id="cv-close-modal">✕</span>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+                      <span class="cv-pill" id="cv-open-backup-view"><i class="fa-solid fa-cloud-arrow-up"></i> 备份与同步</span>
+                      <span class="cv-pill" id="cv-cycle-theme-inline">${getThemeLabel(settings.themeMode)}</span>
+                      <span class="cv-pill" id="cv-toggle-cols">${settings.gridCols} 列</span>
+                      <span class="cv-pill" id="cv-close-modal"><i class="fa-solid fa-xmark"></i></span>
                     </div>
                   </div>
 
-                  <div class="cv-search-wrap">
-                    <i class="fa-solid fa-magnifying-glass" style="opacity:0.7;"></i>
-                    <input type="text" id="cv-search-input" placeholder="搜角色名、档位备注、或聊天对话台词..." />
-                    <span id="cv-search-clear" style="cursor:pointer;opacity:0.7;display:none;padding:0 6px;">✕</span>
+                  <div class="cv-search-wrap" id="cv-search-bar-wrap">
+                    <i class="fa-solid fa-magnifying-glass" style="opacity:0.55;font-size:13px;"></i>
+                    <input type="text" id="cv-search-input" placeholder="搜索角色名、档位备注、或历史对话内容..." />
+                    <span id="cv-search-clear" style="cursor:pointer;opacity:0.6;display:none;padding:0 4px;"><i class="fa-solid fa-xmark"></i></span>
                   </div>
 
                   <div class="cv-filter-row" id="cv-filter-bar">
-                    <span class="cv-pill active" data-filter="recent">🕒 最近游玩</span>
-                    <span class="cv-pill" data-filter="count">🔥 档位最多</span>
-                    <span class="cv-pill" data-filter="multi">📚 仅多档位角色</span>
-                    <span class="cv-pill" id="cv-build-index-pill">⚡ 建立全文索引</span>
+                    <span class="cv-pill active" data-filter="recent">最近游玩</span>
+                    <span class="cv-pill" data-filter="count">档位最多</span>
+                    <span class="cv-pill" data-filter="multi">仅多档位</span>
+                    <span class="cv-pill" id="cv-build-index-pill">建立全文索引</span>
+                    <span class="cv-pill" id="cv-clean-empty-btn">清理空档</span>
+                    <span class="cv-pill" id="cv-toggle-fab-inline">${settings.enableFab ? "隐藏悬浮球" : "开启悬浮球"}</span>
                   </div>
                 </div>
 
                 <div class="cv-body" id="cv-body-content">
-                  <div style="text-align:center;padding:30px;opacity:0.7;">正在加载角色列表...</div>
+                  <div style="text-align:center;padding:30px;opacity:0.65;">正在加载...</div>
                 </div>
               </div>
             </div>
@@ -949,7 +1062,18 @@ async function openMainModal() {
         });
         $("#cv-close-modal").on("click", () => $modal.remove());
 
-        // 弹窗内实时循环切换主题模式（跟随美化 -> 暗黑 -> 浅色）
+        // 备份与同步视图入口
+        $("#cv-open-backup-view").on("click", () => {
+            if (currentView === "backup") {
+                $("#cv-open-backup-view").removeClass("active");
+                renderCharacterGrid();
+            } else {
+                $("#cv-open-backup-view").addClass("active");
+                renderBackupCenterView();
+            }
+        });
+
+        // 切换主题
         $("#cv-cycle-theme-inline").on("click", () => {
             const order = ["inherit", "dark", "light"];
             const nextIdx = (order.indexOf(settings.themeMode) + 1) % order.length;
@@ -960,23 +1084,25 @@ async function openMainModal() {
             syncFabToggleUI();
         });
 
+        // 开关悬浮球
         $("#cv-toggle-fab-inline").on("click", () => {
             settings.enableFab = !settings.enableFab;
             saveSettings();
             initFloatingBall();
             if (window.toastr) {
-                if (!settings.enableFab) toastr.info("悬浮球已隐藏！可在扩展设置中重新开启。");
-                else toastr.success("悬浮球已开启！");
+                toastr.info(settings.enableFab ? "已开启悬浮球" : "已隐藏悬浮球，可通过左下角魔杖菜单重新打开");
             }
         });
 
+        // 切换列数
         $("#cv-toggle-cols").on("click", function () {
             settings.gridCols = settings.gridCols === 2 ? 3 : 2;
             saveSettings();
-            $(this).text(`📱 ${settings.gridCols}列`);
+            $(this).text(`${settings.gridCols} 列`);
             $(".cv-char-grid").removeClass("cols-2 cols-3").addClass(`cols-${settings.gridCols}`);
         });
 
+        // 筛选器
         $("#cv-filter-bar .cv-pill[data-filter]").on("click", function () {
             $("#cv-filter-bar .cv-pill[data-filter]").removeClass("active");
             $(this).addClass("active");
@@ -1006,7 +1132,6 @@ async function openMainModal() {
         refreshAllCharCountsBackground();
     } catch (err) {
         console.error("[ChatVault] openMainModal error:", err);
-        alert("打开存档管家出错：" + err.message);
     }
 }
 
@@ -1014,19 +1139,21 @@ window.cvOpenModal = openMainModal;
 window.cvRebuildIndex = () => buildFullTextIndex(true);
 
 /* =========================================================
-   7. 一级视图：角色美化海报墙
+   7. 一级视图：角色海报墙
    ========================================================= */
 function renderCharacterGrid() {
     try {
         currentView = "grid";
-        $("#cv-filter-bar").show();
+        $("#cv-open-backup-view").removeClass("active");
+        $("#cv-search-bar-wrap, #cv-filter-bar").show();
+
         const ctx = getContext();
         const chars = ctx?.characters || [];
         const settings = getSettings();
         const $body = $("#cv-body-content");
 
         if (!chars.length) {
-            $body.html(`<div style="text-align:center;padding:40px 0;opacity:0.7;">酒馆中还没有角色卡哦</div>`);
+            $body.html(`<div style="text-align:center;padding:40px 0;opacity:0.65;">暂无角色卡</div>`);
             return;
         }
 
@@ -1036,14 +1163,14 @@ function renderCharacterGrid() {
                 const note = settings.notes[getSlotKey(p.avatar, p.fileName)] || p.fileName;
                 return `
                     <div class="cv-pin-chip" data-chid="${p.chid}" data-file="${escapeHtml(p.fileName)}">
-                      <div class="cv-pin-chip-title">📌 ${escapeHtml(note)}</div>
+                      <div class="cv-pin-chip-title">${escapeHtml(note)}</div>
                       <div class="cv-pin-chip-sub">${escapeHtml(p.charName)} · ${escapeHtml(p.fileName)}</div>
-                </div>
+                    </div>
                 `;
             }).join("");
             pinnedHtml = `
                 <div class="cv-pinned-bar">
-                  <div class="cv-section-label">📌 置顶常用档位（点击直达）</div>
+                  <div class="cv-section-label"><i class="fa-solid fa-thumbtack"></i> 常用置顶档位</div>
                   <div class="cv-pinned-list">${chips}</div>
                 </div>
             `;
@@ -1051,7 +1178,7 @@ function renderCharacterGrid() {
 
         let list = chars.map((c, idx) => ({
             chid: idx,
-            name: c?.name || "未命名角色",
+            name: c?.name || "未命名",
             avatar: c?.avatar || "",
             date_last_chat: c?.date_last_chat || 0,
             count: settings.chatCounts[c?.avatar] ?? 1,
@@ -1075,10 +1202,10 @@ function renderCharacterGrid() {
             return `
                 <div class="cv-char-card" data-chid="${item.chid}" data-avatar="${escapeHtml(item.avatar)}">
                   <img src="${thumb}" loading="lazy" onerror="this.src='/img/ai4.png'" alt="${escapeHtml(item.name)}" />
-                  <div class="cv-char-badge" id="cv-badge-${item.chid}">💬 ${item.count} 档</div>
+                  <div class="cv-char-badge" id="cv-badge-${item.chid}">${item.count} 档</div>
                   <div class="cv-char-footer">
                     <div class="cv-char-name">${escapeHtml(item.name)}</div>
-                    <div class="cv-char-time">🕒 ${timeStr}</div>
+                    <div class="cv-char-time">${timeStr}</div>
                   </div>
                 </div>
             `;
@@ -1099,7 +1226,7 @@ function renderCharacterGrid() {
             renderCharacterSlots(Number($(this).data("chid")));
         });
     } catch (err) {
-        $("#cv-body-content").html(`<div style="padding:20px;color:#f87171;">渲染角色列表出错：${escapeHtml(err.message)}</div>`);
+        $("#cv-body-content").html(`<div style="padding:20px;color:#ef4444;">加载角色列表失败：${escapeHtml(err.message)}</div>`);
     }
 }
 
@@ -1113,13 +1240,13 @@ async function refreshAllCharCountsBackground() {
         if (!c?.avatar) continue;
         if (settings.chatCounts[c.avatar] === undefined) {
             const chats = await fetchCharacterChats(c.avatar);
-            $(`#cv-badge-${i}`).text(`💬 ${chats.length} 档`);
+            $(`#cv-badge-${i}`).text(`${chats.length} 档`);
         }
     }
 }
 
 /* =========================================================
-   8. 二级视图：单个角色的档位详情
+   8. 二级视图：角色档位详情
    ========================================================= */
 async function renderCharacterSlots(chid) {
     currentView = "detail";
@@ -1135,13 +1262,13 @@ async function renderCharacterSlots(chid) {
 
     $body.html(`
         <div class="cv-detail-header">
-          <span class="cv-pill" id="cv-back-grid">⬅ 返回</span>
+          <span class="cv-pill" id="cv-back-grid"><i class="fa-solid fa-arrow-left"></i> 返回</span>
           <img class="cv-detail-avatar" src="${thumb}" onerror="this.src='/img/ai4.png'" />
           <div style="flex:1;min-width:0;">
-            <div style="font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(char.name)}</div>
-            <div style="font-size:12px;opacity:0.75;" id="cv-detail-sub">正在读取聊天档位...</div>
+            <div style="font-weight:600;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(char.name)}</div>
+            <div style="font-size:12px;opacity:0.68;" id="cv-detail-sub">正在读取聊天档位...</div>
           </div>
-          <span class="cv-btn-sm primary" id="cv-new-chat-btn">➕ 新档位</span>
+          <span class="cv-btn-sm primary" id="cv-new-chat-btn"><i class="fa-solid fa-plus"></i> 新建档位</span>
         </div>
         <div id="cv-slot-list"></div>
     `);
@@ -1154,14 +1281,14 @@ async function renderCharacterSlots(chid) {
             await new Promise((r) => setTimeout(r, 350));
         }
         await doNewChat({ deleteCurrentChat: false });
-        if (window.toastr) toastr.success("已为该角色开启新档位！");
+        if (window.toastr) toastr.success("已开启新档位");
     });
 
     const chats = await fetchCharacterChats(char.avatar);
-    $("#cv-detail-sub").text(`共 ${chats.length} 个档位（点卡片直接切换）`);
+    $("#cv-detail-sub").text(`共 ${chats.length} 个存档槽（点击卡片直接切换）`);
 
     if (!chats.length) {
-        $("#cv-slot-list").html(`<div style="text-align:center;padding:30px;opacity:0.7;">暂无聊天档位</div>`);
+        $("#cv-slot-list").html(`<div style="text-align:center;padding:30px;opacity:0.65;">暂无聊天档位</div>`);
         return;
     }
 
@@ -1175,7 +1302,7 @@ async function renderCharacterSlots(chid) {
         const isCurrent = fName === currentChatFile && String(ctx.characterId) === String(chid);
         const isPinned = settings.pinned.some((p) => p.avatar === char.avatar && p.fileName === fName);
         const isBranch = /branch|分支/i.test(fName);
-        const previewText = c.mes || "（点击加载此档位...）";
+        const previewText = c.mes || "点击加载此档位...";
         const floorCount = c.chat_items ?? "?";
         const fileSize = c.file_size || "";
         const lastTime = c.last_mes || "";
@@ -1184,29 +1311,29 @@ async function renderCharacterSlots(chid) {
             <div class="cv-slot-card ${isCurrent ? "current-slot" : ""}" data-file="${escapeHtml(fName)}">
               <div class="cv-slot-top" data-action="load">
                 <div>
-                  ${note ? `<span class="cv-slot-note-tag">🏷️ ${escapeHtml(note)}</span>` : ""}
-                  ${isBranch ? `<span class="cv-slot-note-tag" style="background:#10b981;">🌿 分支</span>` : ""}
+                  ${note ? `<span class="cv-slot-note-tag">${escapeHtml(note)}</span>` : ""}
+                  ${isBranch ? `<span class="cv-slot-note-tag" style="background:#10b981;">分支</span>` : ""}
                   <span class="cv-slot-title">${escapeHtml(fName)}</span>
                 </div>
-                <span class="cv-pill ${isCurrent ? "active" : ""}">${isCurrent ? "当前使用" : "加载"}</span>
+                <span class="cv-pill ${isCurrent ? "active" : ""}">${isCurrent ? "当前档位" : "加载"}</span>
               </div>
 
               <div class="cv-slot-meta">
-                <span>🏢 共 <b>${floorCount}</b> 楼</span>
-                ${lastTime ? `<span>🕒 ${escapeHtml(lastTime)}</span>` : ""}
-                ${fileSize ? `<span>📦 ${escapeHtml(fileSize)}</span>` : ""}
+                <span>${floorCount} 楼</span>
+                ${lastTime ? `<span>${escapeHtml(lastTime)}</span>` : ""}
+                ${fileSize ? `<span>${escapeHtml(fileSize)}</span>` : ""}
               </div>
 
               <div class="cv-slot-preview" data-action="load">
-                💬 最后一句：${escapeHtml(previewText)}
+                ${escapeHtml(previewText)}
               </div>
 
               <div class="cv-slot-actions">
-                <span class="cv-btn-sm" data-action="pin">${isPinned ? "🌟 已置顶" : "📌 置顶"}</span>
-                <span class="cv-btn-sm" data-action="note">✏️ 备注</span>
-                <span class="cv-btn-sm" data-action="rename">🔤 改名</span>
-                <span class="cv-btn-sm" data-action="clone">📋 克隆</span>
-                <span class="cv-btn-sm danger" data-action="delete">🗑️ 删除</span>
+                <span class="cv-btn-sm" data-action="pin">${isPinned ? "取消置顶" : "置顶"}</span>
+                <span class="cv-btn-sm" data-action="note">备注</span>
+                <span class="cv-btn-sm" data-action="rename">改名</span>
+                <span class="cv-btn-sm" data-action="clone">克隆</span>
+                <span class="cv-btn-sm danger" data-action="delete">删除</span>
               </div>
             </div>
         `;
@@ -1226,7 +1353,7 @@ async function renderCharacterSlots(chid) {
             switchAndLocate(chid, fName);
         } else if (action === "note") {
             const oldNote = settings.notes[slotKey] || "";
-            const newNote = prompt("为该档位设置剧情备注/标签（留空则清除）：", oldNote);
+            const newNote = prompt("设置档位备注标签（留空则清除）：", oldNote);
             if (newNote !== null) {
                 if (newNote.trim()) settings.notes[slotKey] = newNote.trim();
                 else delete settings.notes[slotKey];
@@ -1237,43 +1364,590 @@ async function renderCharacterSlots(chid) {
             const idx = settings.pinned.findIndex((p) => p.avatar === char.avatar && p.fileName === fName);
             if (idx >= 0) {
                 settings.pinned.splice(idx, 1);
-                if (window.toastr) toastr.info("已取消置顶");
             } else {
                 settings.pinned.unshift({ chid, avatar: char.avatar, charName: char.name, fileName: fName });
-                if (window.toastr) toastr.success("已置顶到首页常用栏！");
             }
             saveSettings();
             renderCharacterSlots(chid);
         } else if (action === "rename") {
-            const newName = prompt("请输入新的档位文件名：", fName);
+            const newName = prompt("输入新的档位文件名：", fName);
             if (newName && newName.trim() && newName.trim() !== fName) {
                 const ok = await renameChatFile(char.avatar, fName, newName.trim());
-                if (ok) {
-                    if (window.toastr) toastr.success("重命名成功！");
-                    renderCharacterSlots(chid);
-                } else if (window.toastr) toastr.error("重命名失败");
+                if (ok) renderCharacterSlots(chid);
+                else if (window.toastr) toastr.error("重命名失败");
             }
         } else if (action === "clone") {
-            if (window.toastr) toastr.info("正在克隆档位...");
             const ok = await cloneChatFile(char.name, char.avatar, fName);
             if (ok) {
-                if (window.toastr) toastr.success("已克隆出新备份档位！");
+                if (window.toastr) toastr.success("已克隆备份档位");
                 renderCharacterSlots(chid);
-            } else if (window.toastr) toastr.error("克隆失败");
+            }
         } else if (action === "delete") {
-            if (confirm(`确定要永久删除档位【${fName}】吗？`)) {
+            if (confirm(`确定要删除档位「${fName}」吗？`)) {
                 const ok = await deleteChatFile(char.avatar, fName);
-                if (ok) {
-                    if (window.toastr) toastr.success("已删除该档位");
-                    renderCharacterSlots(chid);
-                } else if (window.toastr) toastr.error("删除失败");
+                if (ok) renderCharacterSlots(chid);
             }
         }
     });
 }
 
 /* =========================================================
-   9. 全局搜索与跨档位全文索引定位
+   9. 全能备份与云同步中心（支持勾选数据、本地导出/导入、GitHub 云同步）
+   ========================================================= */
+async function scanInstalledExtensions() {
+    const settings = getSettings();
+    const list = [];
+    const seen = new Set();
+
+    // 1. 尝试从酒馆 discover 接口获取第三方扩展列表
+    try {
+        const res = await fetch("/api/extensions/discover");
+        if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data)) {
+                for (const item of data) {
+                    const name = item.name || "";
+                    if (!name || seen.has(name)) continue;
+                    seen.add(name);
+                    list.push({
+                        name,
+                        displayName: name.replace(/^third-party[\\/]/, ""),
+                        url: settings.customExtUrls[name] || item.remoteUrl || item.homePage || "",
+                    });
+                }
+            }
+        }
+    } catch (_) {}
+
+    // 2. 从页面已加载的 script/link 标签提取 third-party 插件目录名并读取 manifest.json
+    const domFolders = new Set();
+    document.querySelectorAll('script[src*="third-party/"], link[href*="third-party/"]').forEach((el) => {
+        const url = el.src || el.href || "";
+        const m = url.match(/third-party\/([^/?#]+)/);
+        if (m && m[1]) domFolders.add(m[1]);
+    });
+
+    for (const folder of domFolders) {
+        const fullKey = `third-party/${folder}`;
+        if (seen.has(fullKey) || seen.has(folder)) continue;
+        seen.add(folder);
+
+        let repoUrl = settings.customExtUrls[folder] || "";
+        try {
+            const mRes = await fetch(`/scripts/extensions/third-party/${folder}/manifest.json`);
+            if (mRes.ok) {
+                const manifest = await mRes.json();
+                if (!repoUrl && manifest.homePage && manifest.homePage.includes("github.com")) {
+                    repoUrl = manifest.homePage;
+                }
+            }
+        } catch (_) {}
+
+        list.push({
+            name: folder,
+            displayName: folder,
+            url: repoUrl,
+        });
+    }
+
+    return list;
+}
+
+async function renderBackupCenterView() {
+    currentView = "backup";
+    $("#cv-search-bar-wrap, #cv-filter-bar").hide();
+    const settings = getSettings();
+    const sel = settings.backupSelection;
+    const $body = $("#cv-body-content");
+
+    $body.html(`
+        <div class="cv-detail-header">
+          <span class="cv-pill" id="cv-backup-back"><i class="fa-solid fa-arrow-left"></i> 返回海报墙</span>
+          <div style="font-weight:600;font-size:15px;">全能备份与恢复中心</div>
+        </div>
+
+        <div class="cv-backup-card">
+          <div class="cv-backup-title">
+            <span>1. 勾选需要导出的数据模块</span>
+            <span style="font-size:11px;opacity:0.65;font-weight:normal;">导入恢复时会自动识别包内数据</span>
+          </div>
+
+          <label class="cv-check-item">
+            <input type="checkbox" data-bkey="charactersAndChats" ${sel.charactersAndChats ? "checked" : ""} />
+            <div>
+              <div style="font-weight:600;font-size:13px;">角色卡与全部聊天记录</div>
+              <div style="font-size:11.5px;opacity:0.68;">包含角色 PNG 原图（含人物设定）、所有历史聊天档位、以及档位备注与置顶</div>
+            </div>
+          </label>
+
+          <label class="cv-check-item">
+            <input type="checkbox" data-bkey="worlds" ${sel.worlds ? "checked" : ""} />
+            <div>
+              <div style="font-weight:600;font-size:13px;">世界书 (World Info)</div>
+              <div style="font-size:11.5px;opacity:0.68;">所有世界书 JSON 词条文件与触发配置</div>
+            </div>
+          </label>
+
+          <label class="cv-check-item">
+            <input type="checkbox" data-bkey="themesAndPresets" ${sel.themesAndPresets ? "checked" : ""} />
+            <div>
+              <div style="font-weight:600;font-size:13px;">美化主题与全局预设 (Themes & Presets)</div>
+              <div style="font-size:11.5px;opacity:0.68;">包含第三方美化主题参数、自定义 CSS、全局 settings 及当前采样预设</div>
+            </div>
+          </label>
+
+          <label class="cv-check-item">
+            <input type="checkbox" data-bkey="extensions" ${sel.extensions ? "checked" : ""} />
+            <div style="flex:1;">
+              <div style="font-weight:600;font-size:13px;">第三方插件下载清单与配置</div>
+              <div style="font-size:11.5px;opacity:0.68;">保存所有插件设置及 GitHub 仓库地址，恢复时可全自动重新下载安装</div>
+            </div>
+          </label>
+
+          <div id="cv-ext-url-list" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--cv-border);font-size:12px;">
+            正在扫描已安装的插件地址...
+          </div>
+        </div>
+
+        <div class="cv-backup-card">
+          <div class="cv-backup-title">
+            <span>2. 本地文件备份 / 恢复</span>
+          </div>
+          <div style="font-size:12px;opacity:0.75;margin-bottom:8px;">
+            将上方勾选的数据打包下载到手机本地，或选择之前的备份文件一键还原。
+          </div>
+          <div class="cv-action-row">
+            <button type="button" class="cv-btn-block primary" id="cv-export-local-btn">
+              <i class="fa-solid fa-download"></i> 导出备份文件到本地
+            </button>
+            <button type="button" class="cv-btn-block" id="cv-import-local-btn">
+              <i class="fa-solid fa-upload"></i> 选择本地备份文件恢复
+            </button>
+            <input type="file" id="cv-import-file-input" accept=".json" style="display:none;" />
+          </div>
+        </div>
+
+        <div class="cv-backup-card">
+          <div class="cv-backup-title">
+            <span>3. GitHub 私有仓库云同步</span>
+          </div>
+          <div style="font-size:12px;opacity:0.75;margin-bottom:8px;">
+            填入你的 GitHub Token 与仓库名（如 <code>username/st-backup</code>），即可一键云端备份与跨设备恢复。
+          </div>
+          <div style="margin-bottom:8px;">
+            <div style="font-size:12px;opacity:0.8;">GitHub Personal Access Token (需勾选 repo 权限)：</div>
+            <input type="password" class="cv-input-field" id="cv-gh-token" placeholder="ghp_xxxxxxxxxxxx" value="${escapeHtml(settings.ghToken)}" />
+          </div>
+          <div style="margin-bottom:8px;">
+            <div style="font-size:12px;opacity:0.8;">目标仓库名 (格式：用户名/仓库名)：</div>
+            <input type="text" class="cv-input-field" id="cv-gh-repo" placeholder="例如：yourname/st-vault-backup" value="${escapeHtml(settings.ghRepo)}" />
+          </div>
+          <div class="cv-action-row">
+            <button type="button" class="cv-btn-block primary" id="cv-cloud-upload-btn">
+              <i class="fa-solid fa-cloud-arrow-up"></i> 上传备份至 GitHub 云端
+            </button>
+            <button type="button" class="cv-btn-block" id="cv-cloud-restore-btn">
+              <i class="fa-solid fa-cloud-arrow-down"></i> 从 GitHub 云端拉取恢复
+            </button>
+          </div>
+        </div>
+
+        <div id="cv-backup-progress" style="font-size:12.5px;text-align:center;padding:8px;color:var(--cv-accent);"></div>
+    `);
+
+    $("#cv-backup-back").on("click", () => renderCharacterGrid());
+
+    // 绑定勾选状态保存
+    $body.find("input[data-bkey]").on("change", function () {
+        const key = $(this).data("bkey");
+        settings.backupSelection[key] = $(this).prop("checked");
+        saveSettings();
+    });
+
+    // 保存 GitHub 配置
+    $("#cv-gh-token, #cv-gh-repo").on("change", function () {
+        settings.ghToken = $("#cv-gh-token").val().trim();
+        settings.ghRepo = $("#cv-gh-repo").val().trim();
+        saveSettings();
+    });
+
+    // 扫描并展示已安装插件的 GitHub 链接（允许用户核对或补充）
+    const extList = await scanInstalledExtensions();
+    if (!extList.length) {
+        $("#cv-ext-url-list").html(`<div style="opacity:0.65;">未检测到第三方插件目录</div>`);
+    } else {
+        const rows = extList.map((ext) => `
+            <div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
+              <span style="min-width:110px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(ext.displayName)}</span>
+              <input type="text" class="cv-input-field cv-ext-url-input" data-extname="${escapeHtml(ext.name)}" style="margin-top:0;padding:5px 8px;font-size:11.5px;" placeholder="粘贴该插件的 GitHub 仓库地址以便重装时自动下载" value="${escapeHtml(ext.url)}" />
+            </div>
+        `).join("");
+        $("#cv-ext-url-list").html(`
+            <div style="opacity:0.75;margin-bottom:4px;">已扫描到的插件（恢复时将按下方 GitHub 地址自动下载安装）：</div>
+            ${rows}
+        `);
+        $(".cv-ext-url-input").on("change", function () {
+            const name = $(this).data("extname");
+            settings.customExtUrls[name] = $(this).val().trim();
+            saveSettings();
+        });
+    }
+
+    // 绑定本地导出
+    $("#cv-export-local-btn").on("click", async () => {
+        try {
+            const pack = await buildBackupPackage((msg) => $("#cv-backup-progress").text(msg));
+            const blob = new Blob([JSON.stringify(pack)], { type: "application/json;charset=utf-8" });
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = `ST_Backup_${new Date().toISOString().slice(0, 10)}.json`;
+            a.click();
+            $("#cv-backup-progress").text("本地备份文件已成功生成并开始下载。");
+        } catch (err) {
+            $("#cv-backup-progress").text("导出失败：" + err.message);
+        }
+    });
+
+    // 绑定本地导入恢复
+    $("#cv-import-local-btn").on("click", () => $("#cv-import-file-input").trigger("click"));
+    $("#cv-import-file-input").on("change", async function (e) {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        try {
+            const text = await file.text();
+            const pack = JSON.parse(text);
+            await restoreFromBackupPackage(pack, (msg) => $("#cv-backup-progress").text(msg));
+        } catch (err) {
+            $("#cv-backup-progress").text("恢复失败：" + err.message);
+        }
+    });
+
+    // 绑定 GitHub 云端上传
+    $("#cv-cloud-upload-btn").on("click", async () => {
+        try {
+            await uploadBackupToGitHub((msg) => $("#cv-backup-progress").text(msg));
+        } catch (err) {
+            $("#cv-backup-progress").text("云端上传失败：" + err.message);
+        }
+    });
+
+    // 绑定 GitHub 云端恢复
+    $("#cv-cloud-restore-btn").on("click", async () => {
+        try {
+            await restoreBackupFromGitHub((msg) => $("#cv-backup-progress").text(msg));
+        } catch (err) {
+            $("#cv-backup-progress").text("云端恢复失败：" + err.message);
+        }
+    });
+}
+
+// 打包用户勾选的数据
+async function buildBackupPackage(onProgress) {
+    const ctx = getContext();
+    const settings = getSettings();
+    const sel = settings.backupSelection;
+
+    const pack = {
+        version: "2.0.0",
+        timestamp: Date.now(),
+        modules: {},
+    };
+
+    // 1. 角色卡原图 (.png) 与全部聊天档位 (.jsonl) + 存档管家备注
+    if (sel.charactersAndChats) {
+        onProgress("正在打包角色卡与聊天记录...");
+        const chars = ctx?.characters || [];
+        const charDataList = [];
+
+        for (let i = 0; i < chars.length; i++) {
+            const c = chars[i];
+            if (!c?.avatar) continue;
+            onProgress(`正在打包角色 (${i + 1}/${chars.length}): ${c.name}...`);
+
+            // 拉取角色 PNG 原图（内含完整 V2 角色卡设定数据）
+            let pngBase64 = null;
+            try {
+                const imgRes = await fetch(`/characters/${encodeURIComponent(c.avatar)}`);
+                if (imgRes.ok) {
+                    const blob = await imgRes.blob();
+                    pngBase64 = await blobToBase64(blob);
+                }
+            } catch (_) {}
+
+            // 拉取该角色所有聊天档位
+            const chatMetas = await fetchCharacterChats(c.avatar);
+            const chatFiles = [];
+            for (const meta of chatMetas) {
+                const fName = stripFileExt(meta.file_name);
+                const rawChat = await fetchRawChatArray(c.name, c.avatar, fName);
+                if (rawChat.length) {
+                    chatFiles.push({ fileName: fName, chat: rawChat });
+                }
+            }
+
+            charDataList.push({
+                name: c.name,
+                avatar: c.avatar,
+                pngBase64,
+                chats: chatFiles,
+            });
+        }
+
+        pack.modules.charactersAndChats = {
+            characters: charDataList,
+            vaultNotes: settings.notes,
+            vaultPinned: settings.pinned,
+        };
+    }
+
+    // 2. 世界书 (World Info)
+    if (sel.worlds) {
+        onProgress("正在打包世界书...");
+        const worldsData = [];
+        try {
+            const settingsRes = await fetch("/api/settings/get", {
+                method: "POST",
+                headers: getRequestHeaders(),
+                body: JSON.stringify({}),
+            });
+            let worldNames = [];
+            if (settingsRes.ok) {
+                const sJson = await settingsRes.json();
+                worldNames = sJson.world_names || [];
+            }
+            for (const wName of worldNames) {
+                const wRes = await fetch("/api/worldinfo/get", {
+                    method: "POST",
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ name: wName }),
+                });
+                if (wRes.ok) {
+                    const wContent = await wRes.json();
+                    worldsData.push({ name: wName, data: wContent });
+                }
+            }
+        } catch (_) {}
+        pack.modules.worlds = worldsData;
+    }
+
+    // 3. 美化主题与全局预设 (settings.json + themes + custom_css)
+    if (sel.themesAndPresets) {
+        onProgress("正在打包美化主题与全局预设...");
+        let rawSettingsJson = null;
+        try {
+            const res = await fetch("/api/settings/get", {
+                method: "POST",
+                headers: getRequestHeaders(),
+                body: JSON.stringify({}),
+            });
+            if (res.ok) {
+                const data = await res.json();
+                rawSettingsJson = data.settings ? JSON.parse(data.settings) : null;
+            }
+        } catch (_) {}
+        pack.modules.themesAndPresets = {
+            settingsJson: rawSettingsJson,
+        };
+    }
+
+    // 4. 第三方插件清单与配置
+    if (sel.extensions) {
+        onProgress("正在打包插件清单与配置...");
+        const extList = await scanInstalledExtensions();
+        pack.modules.extensions = {
+            installList: extList.filter((e) => e.url && e.url.startsWith("http")),
+            extensionSettings: extension_settings,
+            customExtUrls: settings.customExtUrls,
+        };
+    }
+
+    return pack;
+}
+
+// 从备份包全自动恢复
+async function restoreFromBackupPackage(pack, onProgress) {
+    if (!pack || !pack.modules) throw new Error("无效的备份文件格式");
+    const mods = pack.modules;
+
+    if (!confirm("即将开始恢复备份包中的数据，确定继续吗？")) return;
+
+    // 1. 自动重装第三方插件并恢复插件配置
+    if (mods.extensions) {
+        const list = mods.extensions.installList || [];
+        for (let i = 0; i < list.length; i++) {
+            const ext = list[i];
+            if (!ext.url || ext.name.includes(EXT_NAME)) continue;
+            onProgress(`正在自动下载安装插件 (${i + 1}/${list.length}): ${ext.displayName}...`);
+            try {
+                await fetch("/api/extensions/install", {
+                    method: "POST",
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ url: ext.url }),
+                });
+            } catch (_) {}
+        }
+        if (mods.extensions.extensionSettings) {
+            Object.assign(extension_settings, mods.extensions.extensionSettings);
+            saveSettings();
+        }
+    }
+
+    // 2. 恢复世界书
+    if (Array.isArray(mods.worlds)) {
+        for (let i = 0; i < mods.worlds.length; i++) {
+            const w = mods.worlds[i];
+            onProgress(`正在恢复世界书 (${i + 1}/${mods.worlds.length}): ${w.name}...`);
+            try {
+                await fetch("/api/worldinfo/edit", {
+                    method: "POST",
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ name: w.name, data: w.data }),
+                });
+            } catch (_) {}
+        }
+    }
+
+    // 3. 恢复角色卡 PNG 与全部聊天记录
+    if (mods.charactersAndChats) {
+        const settings = getSettings();
+        if (mods.charactersAndChats.vaultNotes) {
+            Object.assign(settings.notes, mods.charactersAndChats.vaultNotes);
+        }
+        if (Array.isArray(mods.charactersAndChats.vaultPinned)) {
+            settings.pinned = mods.charactersAndChats.vaultPinned;
+        }
+        saveSettings();
+
+        const chars = mods.charactersAndChats.characters || [];
+        for (let i = 0; i < chars.length; i++) {
+            const c = chars[i];
+            onProgress(`正在恢复角色与聊天档位 (${i + 1}/${chars.length}): ${c.name}...`);
+
+            // 导入角色 PNG 原图
+            if (c.pngBase64) {
+                try {
+                    const blob = base64ToBlob(c.pngBase64);
+                    const formData = new FormData();
+                    formData.append("avatar", blob, c.avatar || `${c.name}.png`);
+                    formData.append("file_type", "png");
+                    const headers = getRequestHeaders();
+                    delete headers["Content-Type"]; // 让浏览器自动设置 multipart boundary
+                    await fetch("/api/characters/import", {
+                        method: "POST",
+                        headers,
+                        body: formData,
+                    });
+                } catch (_) {}
+            }
+
+            // 恢复该角色下的所有聊天记录档位
+            if (Array.isArray(c.chats)) {
+                for (const slot of c.chats) {
+                    try {
+                        await fetch("/api/chats/save", {
+                            method: "POST",
+                            headers: getRequestHeaders(),
+                            body: JSON.stringify({
+                                ch_name: c.name,
+                                file_name: slot.fileName,
+                                chat: slot.chat,
+                                avatar_url: c.avatar,
+                            }),
+                        });
+                    } catch (_) {}
+                }
+            }
+        }
+    }
+
+    // 4. 恢复美化主题与全局设置
+    if (mods.themesAndPresets?.settingsJson) {
+        onProgress("正在恢复美化主题与全局预设...");
+        try {
+            await fetch("/api/settings/save", {
+                method: "POST",
+                headers: getRequestHeaders(),
+                body: JSON.stringify(mods.themesAndPresets.settingsJson),
+            });
+        } catch (_) {}
+    }
+
+    onProgress("全部数据恢复完成！请刷新网页以使所有角色、美化和插件生效。");
+    if (window.toastr) toastr.success("恢复完成！即将刷新页面...");
+    setTimeout(() => location.reload(), 1800);
+}
+
+// GitHub 云端上传与下载
+async function uploadBackupToGitHub(onProgress) {
+    const settings = getSettings();
+    const token = $("#cv-gh-token").val()?.trim() || settings.ghToken;
+    const repo = $("#cv-gh-repo").val()?.trim() || settings.ghRepo;
+    if (!token || !repo) throw new Error("请先填写 GitHub Token 和仓库名");
+
+    settings.ghToken = token;
+    settings.ghRepo = repo;
+    saveSettings();
+
+    const pack = await buildBackupPackage(onProgress);
+    onProgress("正在加密编码并上传至 GitHub 仓库...");
+
+    const contentBase64 = btoa(unescape(encodeURIComponent(JSON.stringify(pack))));
+    const filePath = "st_vault_backup.json";
+    const apiUrl = `https://api.github.com/repos/${repo}/contents/${filePath}`;
+
+    // 检查是否已有文件以获取 sha
+    let sha = undefined;
+    const getRes = await fetch(apiUrl, {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github.v3+json" },
+    });
+    if (getRes.ok) {
+        const existing = await getRes.json();
+        sha = existing.sha;
+    }
+
+    const putRes = await fetch(apiUrl, {
+        method: "PUT",
+        headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github.v3+json",
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            message: `Backup via Chat Vault (${new Date().toISOString()})`,
+            content: contentBase64,
+            sha,
+        }),
+    });
+
+    if (!putRes.ok) {
+        const errData = await putRes.json().catch(() => ({}));
+        throw new Error(errData.message || `HTTP ${putRes.status}`);
+    }
+
+    onProgress("云端同步成功！数据已安全保存至你的 GitHub 仓库。");
+    if (window.toastr) toastr.success("GitHub 云端备份成功");
+}
+
+async function restoreBackupFromGitHub(onProgress) {
+    const settings = getSettings();
+    const token = $("#cv-gh-token").val()?.trim() || settings.ghToken;
+    const repo = $("#cv-gh-repo").val()?.trim() || settings.ghRepo;
+    if (!token || !repo) throw new Error("请先填写 GitHub Token 和仓库名");
+
+    onProgress("正在从 GitHub 云端拉取备份数据...");
+    const apiUrl = `https://api.github.com/repos/${repo}/contents/st_vault_backup.json`;
+    const res = await fetch(apiUrl, {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github.v3.raw" },
+    });
+
+    if (!res.ok) throw new Error(`拉取失败 (HTTP ${res.status})，请检查仓库名或权限`);
+    const text = await res.text();
+    const pack = JSON.parse(text);
+    await restoreFromBackupPackage(pack, onProgress);
+}
+
+/* =========================================================
+   10. 全局搜索与跨档位全文定位
    ========================================================= */
 async function buildFullTextIndex(showToast = true) {
     if (isIndexing) return;
@@ -1281,8 +1955,8 @@ async function buildFullTextIndex(showToast = true) {
     const ctx = getContext();
     const chars = ctx?.characters || [];
 
-    if (showToast && window.toastr) toastr.info("正在后台建立聊天全文索引，请稍候...");
-    $("#cv-sub-status").text("（正在建索引...）");
+    if (showToast && window.toastr) toastr.info("正在建立聊天全文索引...");
+    $("#cv-sub-status").text("正在建立索引...");
 
     for (let chid = 0; chid < chars.length; chid++) {
         const c = chars[chid];
@@ -1312,8 +1986,8 @@ async function buildFullTextIndex(showToast = true) {
     }
 
     isIndexing = false;
-    $("#cv-sub-status").text(`（已索引 ${fullTextIndex.size} 档）`);
-    if (showToast && window.toastr) toastr.success(`全文索引完成！共收录 ${fullTextIndex.size} 个档位记录。`);
+    $("#cv-sub-status").text(`已索引 ${fullTextIndex.size} 档`);
+    if (showToast && window.toastr) toastr.success(`全文索引完成，共收录 ${fullTextIndex.size} 个档位`);
 
     const currentKw = $("#cv-search-input").val()?.trim();
     if (currentKw) renderSearchResults(currentKw);
@@ -1367,7 +2041,7 @@ async function renderSearchResults(keyword) {
                 charName: entry.charName,
                 fileName: entry.fileName,
                 mesid: 0,
-                snippet: `【档位名/备注匹配】${note ? `[${note}] ` : ""}${entry.fileName}`,
+                snippet: `[档位/备注匹配] ${note ? `${note} · ` : ""}${entry.fileName}`,
             });
         }
 
@@ -1393,13 +2067,13 @@ async function renderSearchResults(keyword) {
 
     let html = "";
     if (matchedChars.length > 0) {
-        html += `<div class="cv-section-label">👤 匹配的角色 (${matchedChars.length})</div>`;
+        html += `<div class="cv-section-label">匹配的角色 (${matchedChars.length})</div>`;
         html += `<div class="cv-pinned-list" style="margin-bottom:14px;">`;
         for (const { chid, char } of matchedChars) {
             html += `
                 <div class="cv-pin-chip cv-search-char-hit" data-chid="${chid}">
                   <div class="cv-pin-chip-title">${highlightKeyword(char.name, keyword)}</div>
-                  <div class="cv-pin-chip-sub">点击查看全部档位 ➔</div>
+                  <div class="cv-pin-chip-sub">点击查看档位</div>
                 </div>
             `;
         }
@@ -1408,17 +2082,17 @@ async function renderSearchResults(keyword) {
 
     html += `
         <div class="cv-section-label" style="justify-content:space-between;">
-          <span>💬 匹配的聊天楼层 (${messageHits.length}${messageHits.length >= 60 ? "+" : ""})</span>
-          <span class="cv-pill" id="cv-search-index-now" style="font-size:11px;">🔄 扫描全部档位</span>
+          <span>匹配的聊天楼层 (${messageHits.length}${messageHits.length >= 60 ? "+" : ""})</span>
+          <span class="cv-pill" id="cv-search-index-now" style="font-size:11px;">扫描全部历史档位</span>
         </div>
     `;
 
     if (messageHits.length === 0) {
         html += `
             <div style="text-align:center;padding:28px 14px;opacity:0.8;">
-              <div style="margin-bottom:10px;">未在已缓存档位中找到“<b>${escapeHtml(keyword)}</b>”</div>
-              <button type="button" id="cv-deep-scan-btn" style="padding:10px 18px;border-radius:10px;border:1px solid var(--cv-accent);background:var(--cv-card-bg);color:var(--cv-text);cursor:pointer;">
-                🔍 点击深度扫描所有角色的历史档位
+              <div style="margin-bottom:10px;">未在已缓存档位中找到「<b>${escapeHtml(keyword)}</b>」</div>
+              <button type="button" id="cv-deep-scan-btn" class="cv-pill active" style="padding:8px 16px;">
+                扫描所有角色的历史档位
               </button>
             </div>
         `;
@@ -1426,8 +2100,8 @@ async function renderSearchResults(keyword) {
         html += messageHits.map((hit) => `
             <div class="cv-search-hit" data-chid="${hit.chid}" data-file="${escapeHtml(hit.fileName)}" data-mesid="${hit.mesid}">
               <div class="cv-hit-header">
-                <span>👤 ${escapeHtml(hit.charName)} · 📁 ${escapeHtml(hit.fileName)}</span>
-                <span class="cv-pill active" style="padding:2px 8px;font-size:11px;">直达 #${hit.mesid} 楼</span>
+                <span>${escapeHtml(hit.charName)} · ${escapeHtml(hit.fileName)}</span>
+                <span class="cv-pill active" style="padding:2px 8px;font-size:11px;">#${hit.mesid} 楼</span>
               </div>
               <div class="cv-hit-snippet">
                 ${hit.speaker ? `<b>${escapeHtml(hit.speaker)}:</b> ` : ""}
@@ -1449,7 +2123,7 @@ async function renderSearchResults(keyword) {
 }
 
 /* =========================================================
-   10. 一键清理只有 1 楼的空档位
+   11. 清理只有 1 楼的空档位
    ========================================================= */
 async function runEmptySlotCleaner() {
     const ctx = getContext();
@@ -1483,25 +2157,25 @@ async function runEmptySlotCleaner() {
     }
 
     if (!emptyList.length) {
-        if (window.toastr) toastr.success("非常干净！没有发现多余的 1 楼废档。");
+        if (window.toastr) toastr.success("没有发现多余的 1 楼空档位");
         return;
     }
 
     const previewNames = emptyList.slice(0, 6).map((e) => `[${e.charName}] ${e.fileName}`).join("\n");
-    if (!confirm(`共扫描到 ${emptyList.length} 个只有开场白(1楼)的空档位：\n\n${previewNames}\n\n确定要一键清理吗？`)) return;
+    if (!confirm(`共扫描到 ${emptyList.length} 个只有 1 楼且未备注的空档位：\n\n${previewNames}\n\n确定要清理吗？`)) return;
 
     let delCount = 0;
     for (const item of emptyList) {
         if (await deleteChatFile(item.avatar, item.fileName)) delCount++;
     }
 
-    if (window.toastr) toastr.success(`清理完成！共删除 ${delCount} 个空档位。`);
+    if (window.toastr) toastr.success(`已清理 ${delCount} 个空档位`);
     if (currentView === "detail" && selectedCharId !== null) renderCharacterSlots(selectedCharId);
     else renderCharacterGrid();
 }
 
 /* =========================================================
-   11. 插件启动入口
+   12. 插件启动入口
    ========================================================= */
 jQuery(() => {
     injectMasterStyles();
@@ -1513,37 +2187,37 @@ jQuery(() => {
       <div class="chat-vault-settings">
         <div class="inline-drawer">
           <div class="inline-drawer-toggle inline-drawer-header">
-            <b>🗂️ 存档管家 (Chat Vault)</b>
+            <b>存档管家 (Chat Vault)</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
           </div>
           <div class="inline-drawer-content">
             <div style="margin:10px 0;">
               <label class="checkbox_label" style="display:flex;align-items:center;gap:8px;">
                 <input type="checkbox" id="cv_enable_fab" />
-                <span>开启桌面悬浮球（长按快捷切档 / 拖拽贴边）</span>
+                <span>开启悬浮球（支持长按快捷切档与贴边吸附）</span>
               </label>
             </div>
             <div style="margin:10px 0;display:flex;flex-direction:column;gap:4px;">
-              <label for="cv_theme_mode">界面主题风格：</label>
+              <label for="cv_theme_mode">界面外观模式：</label>
               <select id="cv_theme_mode" class="text_pole">
-                <option value="inherit">🔗 跟随酒馆美化主题（自动吸取当前美化包配色）</option>
-                <option value="dark">🌙 纯粹暗黑毛玻璃</option>
-                <option value="light">☀️ 纯粹浅色毛玻璃</option>
+                <option value="inherit">跟随酒馆美化主题（默认推荐）</option>
+                <option value="dark">深色毛玻璃</option>
+                <option value="light">浅色毛玻璃</option>
               </select>
             </div>
             <div style="margin:10px 0;display:flex;flex-direction:column;gap:4px;">
-              <label for="cv_grid_cols">手机海报墙默认列数：</label>
+              <label for="cv_grid_cols">角色海报列数：</label>
               <select id="cv_grid_cols" class="text_pole">
-                <option value="2">一行 2 个（立绘更清晰）</option>
-                <option value="3">一行 3 个（紧凑浏览）</option>
+                <option value="2">每行 2 列</option>
+                <option value="3">每行 3 列</option>
               </select>
             </div>
             <div style="display:flex;gap:10px;margin-top:12px;width:100%;">
-              <button type="button" onclick="window.cvOpenModal && window.cvOpenModal()" style="flex:1;white-space:nowrap;padding:9px 12px;border-radius:10px;border:1px solid var(--cv-border,rgba(255,255,255,0.2));background:var(--cv-accent,#7aa2f7);color:#fff;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
-                <i class="fa-solid fa-folder-open"></i> 立即打开存档管家
+              <button type="button" onclick="window.cvOpenModal && window.cvOpenModal()" style="flex:1;white-space:nowrap;padding:9px 12px;border-radius:8px;border:1px solid var(--cv-border,rgba(255,255,255,0.2));background:var(--cv-accent,#6366f1);color:#fff;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
+                <i class="fa-solid fa-layer-group"></i> 打开存档管家
               </button>
-              <button type="button" onclick="window.cvRebuildIndex && window.cvRebuildIndex()" style="flex:1;white-space:nowrap;padding:9px 12px;border-radius:10px;border:1px solid var(--cv-border,rgba(255,255,255,0.2));background:rgba(128,128,140,0.25);color:var(--cv-text,#fff);font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
-                <i class="fa-solid fa-rotate"></i> 刷新全文搜索索引
+              <button type="button" onclick="window.cvRebuildIndex && window.cvRebuildIndex()" style="flex:1;white-space:nowrap;padding:9px 12px;border-radius:8px;border:1px solid var(--cv-border,rgba(255,255,255,0.2));background:rgba(128,128,140,0.2);color:var(--cv-text,#fff);font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
+                <i class="fa-solid fa-rotate"></i> 刷新全文索引
               </button>
             </div>
           </div>
@@ -1575,7 +2249,7 @@ jQuery(() => {
     $("#cv-wand-entry").remove();
     const $wandItem = $(`
         <div id="cv-wand-entry" onclick="window.cvOpenModal && window.cvOpenModal()" class="list-group-item flex-container flexGap5 interactable">
-          <i class="fa-solid fa-folder-tree"></i>
+          <i class="fa-solid fa-layer-group"></i>
           <span>存档管家 (Chat Vault)</span>
         </div>
     `);
