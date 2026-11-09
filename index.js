@@ -1138,7 +1138,7 @@ async function openMainModal() {
                     </div>
                     <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                       ${hasActiveChar ? `<span class="cv-pill" id="cv-jump-current-char"><i class="fa-solid fa-user-check"></i> 当前角色</span>` : ""}
-                      <span class="cv-pill" id="cv-open-backup-view"><i class="fa-solid fa-cloud-arrow-up"></i> 备份与同步</span>
+                      <span class="cv-pill" id="cv-open-backup-view"><i class="fa-solid fa-cloud"></i> 云备份</span>
                       <span class="cv-pill" id="cv-cycle-theme-inline">${getThemeLabel(settings.themeMode)}</span>
                       <span class="cv-pill" id="cv-toggle-cols">${settings.gridCols} 列</span>
                       <span class="cv-pill" id="cv-close-modal"><i class="fa-solid fa-xmark"></i></span>
@@ -1600,7 +1600,7 @@ async function renderCharacterSlots(chid) {
 }
 
 /* =========================================================
-   9. 五大模块精细勾选备份中心（含“世界书默认排除角色关联”一键筛选）
+   9. 云备份中心（修复扫描调用 + 双重数据兜底读取）
    ========================================================= */
 async function scanExtensionsWithRealGitUrl() {
     const settings = getSettings();
@@ -1714,8 +1714,11 @@ async function loadFullBackupCatalog() {
         });
         if (res.ok) {
             const sData = await res.json();
-            worldNames = sData.world_names || [];
-            fullSettingsObj = sData.settings ? JSON.parse(sData.settings) : {};
+            worldNames = Array.isArray(sData.world_names) ? sData.world_names : [];
+            fullSettingsObj =
+                typeof sData.settings === "string"
+                    ? JSON.parse(sData.settings)
+                    : sData.settings || {};
 
             if (Array.isArray(sData.themes)) {
                 themesList = sData.themes.map((t) => ({ name: t.name || String(t), data: t, checked: true }));
@@ -1743,14 +1746,34 @@ async function loadFullBackupCatalog() {
                 }));
             }
         }
-    } catch (_) {}
+    } catch (e) {
+        console.warn("[存档管家] settings/get fallback:", e);
+    }
+
+    // DOM 保底：若接口未返回世界书列表，从酒馆页面的 #world_info 下拉框提取
+    if (worldNames.length === 0) {
+        $("#world_info option, #character_world option").each(function () {
+            const text = $(this).text().trim();
+            const val = $(this).val();
+            if (val && text && !text.includes("None") && !text.includes("没有") && !worldNames.includes(text)) {
+                worldNames.push(text);
+            }
+        });
+    }
+
+    // DOM 保底：若接口未返回预设列表，从酒馆页面的 #settings_preset_openai 下拉框提取
+    if (presetsList.length === 0) {
+        $("#settings_preset_openai option").each(function () {
+            const name = $(this).text().trim();
+            if (name) presetsList.push({ name, data: null, checked: true });
+        });
+    }
 
     const worldItems = worldNames.map((wName) => {
         const isBound = boundWorldSet.has(wName);
         return {
             name: wName,
             isBound,
-            // 如果该世界书已被角色关联，默认不勾选（避免与角色卡自带世界书重复）
             checked: !isBound,
         };
     });
@@ -1776,27 +1799,43 @@ async function renderBackupCenterView() {
     const settings = getSettings();
     const $body = $("#cv-body-content");
 
+    // 1. 先显示加载状态
     $body.html(`
         <div class="cv-detail-header">
           <span class="cv-pill" id="cv-backup-back"><i class="fa-solid fa-arrow-left"></i> 返回海报墙</span>
-          <div style="font-weight:600;font-size:15px;">模块化备份与增量云同步</div>
+          <div style="font-weight:600;font-size:15px;">云备份</div>
+        </div>
+        <div style="text-align:center;padding:30px;opacity:0.7;">
+          <i class="fa-solid fa-spinner fa-spin"></i> 正在扫描角色卡、世界书、美化主题、预设与插件...
+        </div>
+    `);
+    $("#cv-backup-back").on("click", () => renderCharacterGrid());
+
+    // 2. 关键修复：调用扫描函数加载全部 5 大模块数据
+    await loadFullBackupCatalog();
+
+    // 3. 渲染扫描完成后的完整勾选面板
+    $body.html(`
+        <div class="cv-detail-header">
+          <span class="cv-pill" id="cv-backup-back"><i class="fa-solid fa-arrow-left"></i> 返回海报墙</span>
+          <div style="font-weight:600;font-size:15px;">云备份</div>
         </div>
 
         <div style="font-size:12px;opacity:0.72;margin-bottom:10px;">
-          点击下方分类卡片可展开并精细勾选要导出的具体项目：
+          点击下方分类卡片可展开并精细勾选需要备份的具体项目：
         </div>
 
         <!-- 1. 角色卡与关联世界书/聊天档位 -->
         <div class="cv-acc-card open" data-section="characters">
           <div class="cv-acc-header">
             <div class="cv-acc-left">
-              <input type="checkbox" class="cv-master-cb" data-cat="characters" checked />
+              <input type="checkbox" class="cv-master-cb" data-cat="characters" ${backupCatalog.characters.some(c => c.checked) ? "checked" : ""} />
               <div>
                 <div class="cv-acc-title">角色卡与聊天档位</div>
                 <div class="cv-acc-sub">支持按角色勾选，角色绑定的专属世界书与历史记录自动跟随导出</div>
               </div>
             </div>
-            <span class="cv-acc-badge" id="cv-count-characters">${backupCatalog.characters.length}/${backupCatalog.characters.length}</span>
+            <span class="cv-acc-badge" id="cv-count-characters">${backupCatalog.characters.filter(c => c.checked).length}/${backupCatalog.characters.length}</span>
             <i class="fa-solid fa-chevron-down cv-acc-arrow"></i>
           </div>
           <div class="cv-acc-body">
@@ -1817,13 +1856,13 @@ async function renderBackupCenterView() {
             </div>
             <input type="text" class="cv-input-field" id="cv-char-filter-input" placeholder="输入角色名快速筛选..." style="margin-bottom:8px;padding:5px 10px;" />
             <div class="cv-sub-grid" id="cv-backup-char-grid">
-              ${backupCatalog.characters.map((c, idx) => `
+              ${backupCatalog.characters.length ? backupCatalog.characters.map((c, idx) => `
                 <label class="cv-sub-item cv-char-backup-item" data-name="${escapeHtml(c.name.toLowerCase())}" title="${escapeHtml(c.name)}${c.boundWorld ? ` (绑定世界书: ${c.boundWorld})` : ""}">
                   <input type="checkbox" class="cv-item-cb" data-cat="characters" data-idx="${idx}" ${c.checked ? "checked" : ""} />
                   <span>${escapeHtml(c.name)}</span>
                   ${c.boundWorld ? `<i class="fa-solid fa-book-atlas" style="font-size:10px;opacity:0.65;margin-left:auto;" title="含专属世界书"></i>` : ""}
                 </label>
-              `).join("")}
+              `).join("") : `<div style="opacity:0.6;font-size:12px;">暂无角色卡</div>`}
             </div>
           </div>
         </div>
@@ -1835,7 +1874,7 @@ async function renderBackupCenterView() {
               <input type="checkbox" class="cv-master-cb" data-cat="worlds" ${backupCatalog.worlds.some(w => w.checked) ? "checked" : ""} />
               <div>
                 <div class="cv-acc-title">世界书 (World Info)</div>
-                <div class="cv-acc-sub">已自动默认排除角色关联的世界书，仅勾选全局/独立世界书</div>
+                <div class="cv-acc-sub">已默认排除角色关联的世界书，仅勾选全局/独立世界书</div>
               </div>
             </div>
             <span class="cv-acc-badge" id="cv-count-worlds">${backupCatalog.worlds.filter(w => w.checked).length}/${backupCatalog.worlds.length}</span>
@@ -1844,7 +1883,7 @@ async function renderBackupCenterView() {
           <div class="cv-acc-body">
             <div class="cv-sub-toolbar">
               <div style="display:flex;gap:6px;">
-                <span class="cv-pill" id="cv-btn-only-global-worlds" style="padding:2px 8px;font-size:11px;" title="仅勾选未被任何角色卡绑定的全局世界书">仅勾全局世界书</span>
+                <span class="cv-pill" id="cv-btn-only-global-worlds" style="padding:2px 8px;font-size:11px;">仅勾全局世界书</span>
               </div>
               <div style="display:flex;gap:6px;">
                 <span class="cv-pill cv-batch-btn" data-cat="worlds" data-val="1" style="padding:2px 8px;font-size:11px;">全选</span>
@@ -1856,9 +1895,9 @@ async function renderBackupCenterView() {
                 <label class="cv-sub-item" title="${escapeHtml(w.name)}">
                   <input type="checkbox" class="cv-item-cb" data-cat="worlds" data-idx="${idx}" ${w.checked ? "checked" : ""} />
                   <span>${escapeHtml(w.name)}</span>
-                  ${w.isBound ? `<span style="font-size:10px;opacity:0.6;margin-left:auto;" title="已被角色卡关联">角色关联</span>` : ""}
+                  ${w.isBound ? `<span style="font-size:10px;opacity:0.6;margin-left:auto;">角色关联</span>` : ""}
                 </label>
-              `).join("") : `<div style="opacity:0.6;font-size:12px;">暂无独立世界书</div>`}
+              `).join("") : `<div style="opacity:0.6;font-size:12px;">暂无世界书</div>`}
             </div>
           </div>
         </div>
@@ -1935,13 +1974,13 @@ async function renderBackupCenterView() {
         <div class="cv-acc-card open" data-section="extensions">
           <div class="cv-acc-header">
             <div class="cv-acc-left">
-              <input type="checkbox" class="cv-master-cb" data-cat="extensions" checked />
+              <input type="checkbox" class="cv-master-cb" data-cat="extensions" ${backupCatalog.extensions.some(e => e.checked) ? "checked" : ""} />
               <div>
                 <div class="cv-acc-title">第三方插件与配置</div>
                 <div class="cv-acc-sub">已自动读取底层 Git 安装地址，恢复时可自动重新下载所选插件</div>
               </div>
             </div>
-            <span class="cv-acc-badge" id="cv-count-extensions">${backupCatalog.extensions.length}/${backupCatalog.extensions.length}</span>
+            <span class="cv-acc-badge" id="cv-count-extensions">${backupCatalog.extensions.filter(e => e.checked).length}/${backupCatalog.extensions.length}</span>
             <i class="fa-solid fa-chevron-down cv-acc-arrow"></i>
           </div>
           <div class="cv-acc-body">
@@ -1969,24 +2008,21 @@ async function renderBackupCenterView() {
           </div>
         </div>
 
-        <!-- 导出/恢复 与 GitHub 增量云同步操作区 -->
+        <!-- 本地备份 与 GitHub 云备份操作区 -->
         <div class="cv-acc-card" style="padding:14px;">
-          <div style="font-weight:600;font-size:13.5px;margin-bottom:8px;color:var(--cv-em);">本地文件打包 / 恢复</div>
+          <div style="font-weight:600;font-size:13.5px;margin-bottom:8px;color:var(--cv-em);">本地文件备份</div>
           <div class="cv-action-row">
             <button type="button" class="cv-btn-block primary" id="cv-export-local-btn">
-              <i class="fa-solid fa-download"></i> 导出所选数据到本地
+              <i class="fa-solid fa-download"></i> 导出到本地
             </button>
             <button type="button" class="cv-btn-block" id="cv-import-local-btn">
-              <i class="fa-solid fa-upload"></i> 从本地备份文件恢复
+              <i class="fa-solid fa-upload"></i> 从本地文件恢复
             </button>
             <input type="file" id="cv-import-file-input" accept=".json" style="display:none;" />
           </div>
 
           <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--cv-border);">
-            <div style="font-weight:600;font-size:13.5px;margin-bottom:6px;color:var(--cv-em);">GitHub 私有仓库增量云同步</div>
-            <div style="font-size:11.5px;opacity:0.72;margin-bottom:8px;">
-              自动按目录拆分存储并比对文件指纹，每次仅上传有新增或改动的档位与角色卡。
-            </div>
+            <div style="font-weight:600;font-size:13.5px;margin-bottom:6px;color:var(--cv-em);">GitHub 云备份</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
               <input type="password" class="cv-input-field" id="cv-gh-token" placeholder="GitHub Token (ghp_...)" value="${escapeHtml(settings.ghToken)}" />
               <input type="text" class="cv-input-field" id="cv-gh-repo" placeholder="用户名/私有仓库名" value="${escapeHtml(settings.ghRepo)}" />
@@ -1997,10 +2033,10 @@ async function renderBackupCenterView() {
             </label>
             <div class="cv-action-row">
               <button type="button" class="cv-btn-block primary" id="cv-cloud-upload-btn">
-                <i class="fa-solid fa-cloud-arrow-up"></i> 增量同步至 GitHub 云端
+                <i class="fa-solid fa-cloud-arrow-up"></i> 上传云备份
               </button>
               <button type="button" class="cv-btn-block" id="cv-cloud-restore-btn">
-                <i class="fa-solid fa-cloud-arrow-down"></i> 从 GitHub 云端完整恢复
+                <i class="fa-solid fa-cloud-arrow-down"></i> 从云端恢复
               </button>
             </div>
           </div>
@@ -2061,7 +2097,6 @@ async function renderBackupCenterView() {
         updateBadges();
     });
 
-    // 世界书专属筛选：仅勾选全局/独立世界书（自动取消关联角色世界书）
     $("#cv-btn-only-global-worlds").on("click", () => {
         backupCatalog.worlds.forEach((w, idx) => {
             w.checked = !w.isBound;
@@ -2153,7 +2188,7 @@ async function renderBackupCenterView() {
         try {
             await uploadIncrementalToGitHub((msg) => $("#cv-backup-progress").text(msg));
         } catch (err) {
-            $("#cv-backup-progress").text("云端同步失败：" + err.message);
+            $("#cv-backup-progress").text("云备份失败：" + err.message);
         }
     });
 
@@ -2391,7 +2426,10 @@ async function restoreFromBackupPackage(pack, onProgress) {
             });
             if (res.ok) {
                 const sData = await res.json();
-                const currentSettings = sData.settings ? JSON.parse(sData.settings) : {};
+                const currentSettings =
+                    typeof sData.settings === "string"
+                        ? JSON.parse(sData.settings)
+                        : sData.settings || {};
 
                 if (mods.themes) {
                     if (mods.themes.activeTheme) currentSettings.theme = mods.themes.activeTheme;
@@ -2464,7 +2502,7 @@ async function uploadIncrementalToGitHub(onProgress) {
         "Content-Type": "application/json",
     };
 
-    onProgress("正在连接 GitHub 仓库并读取云端增量索引...");
+    onProgress("正在连接 GitHub 云备份仓库...");
 
     const repoRes = await fetch(`https://api.github.com/repos/${repo}`, { headers: ghHeaders });
     if (!repoRes.ok) throw new Error(`无法访问仓库 ${repo} (HTTP ${repoRes.status})`);
@@ -2502,7 +2540,7 @@ async function uploadIncrementalToGitHub(onProgress) {
                 autoBoundWorldNames.add(c.boundWorld);
             }
 
-            onProgress(`正在扫描本地角色 (${i + 1}/${selectedChars.length}): ${c.name}...`);
+            onProgress(`正在扫描角色 (${i + 1}/${selectedChars.length}): ${c.name}...`);
 
             let pngBase64 = null;
             try {
@@ -2648,21 +2686,21 @@ async function uploadIncrementalToGitHub(onProgress) {
     }
 
     if (changedEntries.length === 0 && deletedPaths.length === 0) {
-        onProgress("云端已是最新状态，没有任何文件发生变动（0 流量秒级跳过）！");
-        if (window.toastr) toastr.success("云端已是最新，无需重复上传");
+        onProgress("云端已是最新状态，无需重复上传。");
+        if (window.toastr) toastr.success("云端已是最新状态");
         return;
     }
 
     const treeItems = [];
     for (let i = 0; i < changedEntries.length; i++) {
         const item = changedEntries[i];
-        onProgress(`正在增量上传变动文件 (${i + 1}/${changedEntries.length}): ${item.path.split("/").pop()}...`);
+        onProgress(`正在上传云备份 (${i + 1}/${changedEntries.length}): ${item.path.split("/").pop()}...`);
         const blobRes = await fetch(`https://api.github.com/repos/${repo}/git/blobs`, {
             method: "POST",
             headers: ghHeaders,
             body: JSON.stringify({ content: item.content, encoding: "utf-8" }),
         });
-        if (!blobRes.ok) throw new Error(`上传文件块失败: ${item.path}`);
+        if (!blobRes.ok) throw new Error(`上传失败: ${item.path}`);
         const blobData = await blobRes.json();
 
         treeItems.push({
@@ -2694,7 +2732,7 @@ async function uploadIncrementalToGitHub(onProgress) {
         headers: ghHeaders,
         body: JSON.stringify({ content: updatedManifestStr, encoding: "utf-8" }),
     });
-    if (!mfBlobRes.ok) throw new Error("更新云端索引清单失败");
+    if (!mfBlobRes.ok) throw new Error("更新云端清单失败");
     const mfBlobData = await mfBlobRes.json();
     treeItems.push({
         path: "vault_backup/manifest.json",
@@ -2703,7 +2741,7 @@ async function uploadIncrementalToGitHub(onProgress) {
         sha: mfBlobData.sha,
     });
 
-    onProgress("正在合并云端版本树...");
+    onProgress("正在保存云备份版本...");
     const treeRes = await fetch(`https://api.github.com/repos/${repo}/git/trees`, {
         method: "POST",
         headers: ghHeaders,
@@ -2719,7 +2757,7 @@ async function uploadIncrementalToGitHub(onProgress) {
         method: "POST",
         headers: ghHeaders,
         body: JSON.stringify({
-            message: `Incremental Sync: +${changedEntries.length} updated, -${deletedPaths.length} removed`,
+            message: `Cloud Backup: +${changedEntries.length} updated, -${deletedPaths.length} removed`,
             tree: treeData.sha,
             parents: [latestCommitSha],
         }),
@@ -2734,7 +2772,7 @@ async function uploadIncrementalToGitHub(onProgress) {
     });
     if (!updateRefRes.ok) throw new Error("更新分支指针失败");
 
-    const summaryMsg = `增量同步完成！本次仅上传 ${changedEntries.length} 个变动文件${deletedPaths.length ? `，镜像清理 ${deletedPaths.length} 个旧文件` : ""}。`;
+    const summaryMsg = `云备份完成！已同步 ${changedEntries.length} 个变动项${deletedPaths.length ? `，清理 ${deletedPaths.length} 个旧文件` : ""}。`;
     onProgress(summaryMsg);
     if (window.toastr) toastr.success(summaryMsg);
 }
@@ -2747,7 +2785,7 @@ async function restoreIncrementalFromGitHub(onProgress) {
 
     const rawHeaders = { Authorization: `Bearer ${token}`, Accept: "application/vnd.github.v3.raw" };
 
-    onProgress("正在读取 GitHub 云端备份索引...");
+    onProgress("正在读取云备份索引...");
 
     const mfRes = await fetch(`https://api.github.com/repos/${repo}/contents/vault_backup/manifest.json`, {
         headers: rawHeaders,
@@ -2780,7 +2818,7 @@ async function restoreIncrementalFromGitHub(onProgress) {
 
     for (let i = 0; i < filePaths.length; i++) {
         const path = filePaths[i];
-        onProgress(`正在从云端拉取数据 (${i + 1}/${filePaths.length}): ${path.split("/").pop()}...`);
+        onProgress(`正在从云端拉取 (${i + 1}/${filePaths.length}): ${path.split("/").pop()}...`);
 
         const fRes = await fetch(`https://api.github.com/repos/${repo}/contents/${path}`, { headers: rawHeaders });
         if (!fRes.ok) continue;
