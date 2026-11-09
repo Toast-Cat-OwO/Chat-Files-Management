@@ -20,6 +20,7 @@ const defaultSettings = {
     ghToken: "",
     ghRepo: "",
     ghBranch: "main",
+    mirrorDeleteCloud: false, // 是否开启镜像清理云端已删文件
 };
 
 const fullTextIndex = new Map();
@@ -619,7 +620,7 @@ function injectMasterStyles() {
 }
 
 /* =========================================================
-   1. 基础工具与时间解析排序函数
+   1. 基础工具、哈希指纹与时间排序函数
    ========================================================= */
 function getSettings() {
     extension_settings[EXT_NAME] = extension_settings[EXT_NAME] || {};
@@ -683,14 +684,30 @@ function applyThemeClass($el) {
     if (mode === "light") $el.addClass("cv-theme-light");
 }
 
-// 解析档位最后互动时间戳，确保档位列表严格按从新到旧倒序排列
+// 快速计算文本指纹（用于增量备份对比文件是否有变动）
+function quickHash(str = "") {
+    let h1 = 0xdeadbeef ^ str.length;
+    let h2 = 0x41c6ce57 ^ str.length;
+    for (let i = 0; i < str.length; i++) {
+        const ch = str.charCodeAt(i);
+        h1 = Math.imul(h1 ^ ch, 2654435761);
+        h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return `${(h2 >>> 0).toString(16).padStart(8, "0")}${(h1 >>> 0).toString(16).padStart(8, "0")}_${str.length}`;
+}
+
+function toSafeCloudKey(str = "") {
+    return encodeURIComponent(String(str).trim()).replace(/%/g, "_");
+}
+
 function parseChatSlotTimestamp(slot) {
     if (slot.last_mes && typeof slot.last_mes === "number") return slot.last_mes;
     if (slot.last_mes && typeof slot.last_mes === "string") {
         const parsed = Date.parse(slot.last_mes);
         if (!isNaN(parsed)) return parsed;
     }
-    // 从文件名提取形如 2026-11-08 @02h15m30s 的日期
     const fName = String(slot.file_name || "");
     const m = fName.match(/(\d{4})-(\d{1,2})-(\d{1,2})\s*@?\s*(\d{1,2})h\s*(\d{1,2})m\s*(\d{1,2})?s?/i);
     if (m) {
@@ -885,7 +902,6 @@ function scrollToMessageFloor(mesId) {
     }, 250);
 }
 
-// 监听手机系统返回键/侧滑返回手势，优先返回上一级页面而不是退出酒馆网页
 window.addEventListener("popstate", () => {
     const $modal = $("#cv-modal-overlay");
     if (!$modal.length) {
@@ -893,14 +909,12 @@ window.addEventListener("popstate", () => {
         return;
     }
     if (currentView === "detail" || currentView === "backup" || currentView === "search") {
-        // 如果在二级页面，退回角色海报墙首页，并重新压入历史栈保持拦截
         try { history.pushState({ chatVaultOpen: true }, ""); } catch (_) {}
         historyStatePushed = true;
         $("#cv-search-input").val("");
         $("#cv-search-clear").hide();
         renderCharacterGrid();
     } else {
-        // 如果已经在海报墙首页，则关闭弹窗
         historyStatePushed = false;
         $modal.remove();
     }
@@ -945,7 +959,6 @@ function initFloatingBall() {
     let startLeft = 0, startTop = 0;
     let lpTimer = null;
 
-    // 拦截原生 click 冒泡，防止穿透到底下新弹出的角色卡
     fabEl.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -1012,7 +1025,6 @@ function initFloatingBall() {
         } else if (!longPressed) {
             if (e.cancelable) e.preventDefault();
             e.stopPropagation();
-            // 延迟 40ms 打开弹窗并激活 380ms 防穿透锁，彻底消灭手机滞后幽灵点击
             setTimeout(() => openMainModal(), 40);
         }
         resetIdle();
@@ -1099,7 +1111,6 @@ async function openMainModal() {
         const existing = document.getElementById("cv-modal-overlay");
         if (existing) existing.remove();
 
-        // 记录弹窗开启时刻，380ms 内屏蔽任何穿透点击
         modalOpenTimestamp = Date.now();
 
         if (!historyStatePushed) {
@@ -1168,7 +1179,6 @@ async function openMainModal() {
         });
         $("#cv-close-modal").on("click", () => closeModalCleanly());
 
-        // 一键直达当前正在聊天的角色档位页
         $("#cv-jump-current-char").on("click", () => {
             if (ctx?.characterId !== undefined) {
                 renderCharacterSlots(Number(ctx.characterId));
@@ -1221,7 +1231,6 @@ async function openMainModal() {
         $("#cv-build-index-pill").on("click", () => buildFullTextIndex(true));
         $("#cv-clean-empty-btn").on("click", () => runEmptySlotCleaner());
 
-        // 搜索范围切换（当前角色 vs 全局）
         $("#cv-search-scope-btn").on("click", function () {
             searchScope = searchScope === "char" ? "global" : "char";
             $(this)
@@ -1264,7 +1273,7 @@ window.cvOpenModal = openMainModal;
 window.cvRebuildIndex = () => buildFullTextIndex(true);
 
 /* =========================================================
-   7. 一级视图：角色海报墙（高亮当前角色 + 380ms 防穿透保护）
+   7. 一级视图：角色海报墙
    ========================================================= */
 function renderCharacterGrid() {
     try {
@@ -1356,7 +1365,6 @@ function renderCharacterGrid() {
         });
 
         $body.find(".cv-char-card").on("click", function (e) {
-            // 核心防穿透保护：弹窗刚打开的 380ms 内忽略任何落到卡片上的滞后点击
             if (Date.now() - modalOpenTimestamp < 380) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -1369,7 +1377,6 @@ function renderCharacterGrid() {
     }
 }
 
-// 温和后台统计（仅在打开弹窗后低频读取未缓存的角色，不抢占酒馆初始化）
 async function refreshAllCharCountsGentle() {
     const ctx = getContext();
     const chars = ctx?.characters || [];
@@ -1377,7 +1384,7 @@ async function refreshAllCharCountsGentle() {
     let updated = false;
 
     for (let i = 0; i < chars.length; i++) {
-        if (!$("#cv-modal-overlay").length) break; // 若弹窗已关闭则停止
+        if (!$("#cv-modal-overlay").length) break;
         const c = chars[i];
         if (!c?.avatar) continue;
         if (settings.chatCounts[c.avatar] === undefined) {
@@ -1391,7 +1398,7 @@ async function refreshAllCharCountsGentle() {
 }
 
 /* =========================================================
-   8. 二级视图：角色档位详情（时间倒序 + 内嵌输入框 + 二次确认删除）
+   8. 二级视图：角色档位详情
    ========================================================= */
 async function renderCharacterSlots(chid) {
     currentView = "detail";
@@ -1403,7 +1410,6 @@ async function renderCharacterSlots(chid) {
     const char = ctx?.characters?.[chid];
     if (!char) return;
 
-    // 搜索栏自动切换为“仅搜该角色”模式
     $("#cv-search-scope-btn").show().addClass("active").text("仅当前角色");
     $("#cv-search-input").attr("placeholder", `在「${char.name}」的档位中搜索台词或备注...`);
 
@@ -1441,7 +1447,6 @@ async function renderCharacterSlots(chid) {
 
     const rawChats = await fetchCharacterChats(char.avatar);
     const currentChatFile = stripFileExt(char.chat || "");
-    // 按时间从近到远倒序排列（当前正在使用的档位固定置顶）
     const chats = sortChatSlotsNewestFirst(rawChats, String(ctx.characterId) === String(chid) ? currentChatFile : "");
 
     $("#cv-detail-sub").text(`共 ${chats.length} 个存档槽（按最新时间倒序排列）`);
@@ -1486,7 +1491,6 @@ async function renderCharacterSlots(chid) {
                 ${escapeHtml(previewText)}
               </div>
 
-              <!-- 卡片内嵌迷你编辑器（替代原生丑陋的 prompt 弹窗） -->
               <div class="cv-slot-inline-editor">
                 <input type="text" class="cv-input-field cv-inline-input" style="flex:1;" />
                 <span class="cv-btn-sm primary cv-inline-save">保存</span>
@@ -1506,7 +1510,6 @@ async function renderCharacterSlots(chid) {
 
     $("#cv-slot-list").html(slotsHtml);
 
-    // 绑定内嵌编辑器保存与取消
     $("#cv-slot-list").on("click", ".cv-inline-cancel", function (e) {
         e.stopPropagation();
         $(this).closest(".cv-slot-inline-editor").removeClass("show");
@@ -1552,7 +1555,6 @@ async function renderCharacterSlots(chid) {
         }
     });
 
-    // 绑定卡片功能按钮
     $("#cv-slot-list .cv-slot-card").on("click", async function (e) {
         const $target = $(e.target).closest("[data-action]");
         if (!$target.length) return;
@@ -1585,7 +1587,6 @@ async function renderCharacterSlots(chid) {
                 renderCharacterSlots(chid);
             }
         } else if (action === "delete") {
-            // 内嵌二次确认防误触（不弹原生 confirm 框）
             if (!$target.hasClass("confirming")) {
                 $target.addClass("confirming").text("确认删除?");
                 setTimeout(() => {
@@ -1600,7 +1601,7 @@ async function renderCharacterSlots(chid) {
 }
 
 /* =========================================================
-   9. 五大模块精细化勾选备份中心（含仅勾选有记录角色 + Git Blob 大文件云同步）
+   9. 五大模块精细勾选备份中心 + 真·增量云同步（支持镜像清理开关）
    ========================================================= */
 async function scanExtensionsWithRealGitUrl() {
     const settings = getSettings();
@@ -1775,7 +1776,7 @@ async function renderBackupCenterView() {
     $body.html(`
         <div class="cv-detail-header">
           <span class="cv-pill" id="cv-backup-back"><i class="fa-solid fa-arrow-left"></i> 返回海报墙</span>
-          <div style="font-weight:600;font-size:15px;">模块化备份与云同步</div>
+          <div style="font-weight:600;font-size:15px;">模块化备份与增量云同步</div>
         </div>
         <div style="text-align:center;padding:30px;opacity:0.7;">
           <i class="fa-solid fa-spinner fa-spin"></i> 正在扫描角色、世界书、美化主题、预设与插件 Git 地址...
@@ -1844,7 +1845,7 @@ async function renderBackupCenterView() {
     $body.html(`
         <div class="cv-detail-header">
           <span class="cv-pill" id="cv-backup-back"><i class="fa-solid fa-arrow-left"></i> 返回海报墙</span>
-          <div style="font-weight:600;font-size:15px;">模块化备份与云同步</div>
+          <div style="font-weight:600;font-size:15px;">模块化备份与增量云同步</div>
         </div>
 
         <div style="font-size:12px;opacity:0.72;margin-bottom:10px;">
@@ -1985,12 +1986,12 @@ async function renderBackupCenterView() {
           </div>
         </div>
 
-        <!-- 导出/恢复 与 GitHub 云同步操作区 -->
+        <!-- 导出/恢复 与 GitHub 增量云同步操作区 -->
         <div class="cv-acc-card" style="padding:14px;">
-          <div style="font-weight:600;font-size:13.5px;margin-bottom:8px;color:var(--cv-em);">执行备份或恢复</div>
+          <div style="font-weight:600;font-size:13.5px;margin-bottom:8px;color:var(--cv-em);">本地文件打包 / 恢复</div>
           <div class="cv-action-row">
             <button type="button" class="cv-btn-block primary" id="cv-export-local-btn">
-              <i class="fa-solid fa-download"></i> 导出已勾选数据到本地
+              <i class="fa-solid fa-download"></i> 导出所选数据到本地
             </button>
             <button type="button" class="cv-btn-block" id="cv-import-local-btn">
               <i class="fa-solid fa-upload"></i> 从本地备份文件恢复
@@ -1999,17 +2000,24 @@ async function renderBackupCenterView() {
           </div>
 
           <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--cv-border);">
-            <div style="font-weight:600;font-size:13px;margin-bottom:8px;">GitHub 私有仓库云同步（支持大文件 Blob 流式传输）</div>
+            <div style="font-weight:600;font-size:13.5px;margin-bottom:6px;color:var(--cv-em);">GitHub 私有仓库增量云同步</div>
+            <div style="font-size:11.5px;opacity:0.72;margin-bottom:8px;">
+              自动按目录拆分存储并比对文件指纹，每次仅上传有新增或改动的档位与角色卡。
+            </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
               <input type="password" class="cv-input-field" id="cv-gh-token" placeholder="GitHub Token (ghp_...)" value="${escapeHtml(settings.ghToken)}" />
               <input type="text" class="cv-input-field" id="cv-gh-repo" placeholder="用户名/私有仓库名" value="${escapeHtml(settings.ghRepo)}" />
             </div>
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin:8px 0;cursor:pointer;opacity:0.9;">
+              <input type="checkbox" id="cv-mirror-delete-cb" ${settings.mirrorDeleteCloud ? "checked" : ""} />
+              <span>镜像清理：同步移除云端多余的旧档位（不勾选则云端永久保留已删档位）</span>
+            </label>
             <div class="cv-action-row">
               <button type="button" class="cv-btn-block primary" id="cv-cloud-upload-btn">
-                <i class="fa-solid fa-cloud-arrow-up"></i> 上传至 GitHub 云端
+                <i class="fa-solid fa-cloud-arrow-up"></i> 增量同步至 GitHub 云端
               </button>
               <button type="button" class="cv-btn-block" id="cv-cloud-restore-btn">
-                <i class="fa-solid fa-cloud-arrow-down"></i> 从 GitHub 云端恢复
+                <i class="fa-solid fa-cloud-arrow-down"></i> 从 GitHub 云端完整恢复
               </button>
             </div>
           </div>
@@ -2062,7 +2070,6 @@ async function renderBackupCenterView() {
         updateBadges();
     });
 
-    // 仅勾选聊过的角色
     $("#cv-btn-only-chatted").on("click", () => {
         backupCatalog.characters.forEach((c, idx) => {
             c.checked = Boolean(c.hasChatHistory);
@@ -2071,7 +2078,6 @@ async function renderBackupCenterView() {
         updateBadges();
     });
 
-    // 备份页角色快速搜索过滤
     $("#cv-char-filter-input").on("input", function () {
         const kw = $(this).val().trim().toLowerCase();
         $("#cv-backup-char-grid .cv-char-backup-item").each(function () {
@@ -2100,6 +2106,11 @@ async function renderBackupCenterView() {
 
     $("#cv-opt-char-world").on("change", function () {
         backupCatalog.includeBoundWorldWithChar = $(this).prop("checked");
+    });
+
+    $("#cv-mirror-delete-cb").on("change", function () {
+        settings.mirrorDeleteCloud = $(this).prop("checked");
+        saveSettings();
     });
 
     $body.find(".cv-ext-url-input").on("input change", function () {
@@ -2148,21 +2159,22 @@ async function renderBackupCenterView() {
 
     $("#cv-cloud-upload-btn").on("click", async () => {
         try {
-            await uploadBackupToGitHub((msg) => $("#cv-backup-progress").text(msg));
+            await uploadIncrementalToGitHub((msg) => $("#cv-backup-progress").text(msg));
         } catch (err) {
-            $("#cv-backup-progress").text("云端上传失败：" + err.message);
+            $("#cv-backup-progress").text("云端同步失败：" + err.message);
         }
     });
 
     $("#cv-cloud-restore-btn").on("click", async () => {
         try {
-            await restoreBackupFromGitHub((msg) => $("#cv-backup-progress").text(msg));
+            await restoreIncrementalFromGitHub((msg) => $("#cv-backup-progress").text(msg));
         } catch (err) {
             $("#cv-backup-progress").text("云端恢复失败：" + err.message);
         }
     });
 }
 
+// 本地单文件打包函数
 async function buildSelectiveBackupPackage(onProgress) {
     const settings = getSettings();
     const pack = {
@@ -2294,6 +2306,7 @@ async function buildSelectiveBackupPackage(onProgress) {
     return pack;
 }
 
+// 通用恢复执行器
 async function restoreFromBackupPackage(pack, onProgress) {
     if (!pack || !pack.modules) throw new Error("无效的备份文件格式");
     const mods = pack.modules;
@@ -2449,8 +2462,10 @@ async function restoreFromBackupPackage(pack, onProgress) {
     setTimeout(() => location.reload(), 1800);
 }
 
-// 采用 Git Data (Blobs / Trees / Commits) 接口突破 1MB 文件大小限制
-async function uploadBackupToGitHub(onProgress) {
+/* =========================================================
+   GitHub 真·增量云同步引擎 (分文件比对 Hash + 可选镜像清理)
+   ========================================================= */
+async function uploadIncrementalToGitHub(onProgress) {
     const settings = getSettings();
     const token = $("#cv-gh-token").val()?.trim() || settings.ghToken;
     const repo = $("#cv-gh-repo").val()?.trim() || settings.ghRepo;
@@ -2460,59 +2475,286 @@ async function uploadBackupToGitHub(onProgress) {
     settings.ghRepo = repo;
     saveSettings();
 
-    const pack = await buildSelectiveBackupPackage(onProgress);
-    const jsonStr = JSON.stringify(pack);
     const ghHeaders = {
         Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github.v3+json",
         "Content-Type": "application/json",
     };
 
-    onProgress(`正在上传备份数据 (${(jsonStr.length / 1024 / 1024).toFixed(2)} MB) 至 GitHub...`);
+    onProgress("正在连接 GitHub 仓库并读取云端增量索引...");
 
-    // 1. 获取仓库默认分支与最新 Commit SHA
+    // 1. 获取默认分支与最新 Commit
     const repoRes = await fetch(`https://api.github.com/repos/${repo}`, { headers: ghHeaders });
     if (!repoRes.ok) throw new Error(`无法访问仓库 ${repo} (HTTP ${repoRes.status})`);
     const repoInfo = await repoRes.json();
     const branch = repoInfo.default_branch || "main";
 
     const refRes = await fetch(`https://api.github.com/repos/${repo}/git/ref/heads/${branch}`, { headers: ghHeaders });
-    if (!refRes.ok) throw new Error(`获取分支 ${branch} 失败，请确保仓库已初始化(含README)`);
+    if (!refRes.ok) throw new Error(`获取分支失败，请确保仓库已初始化(含README)`);
     const refData = await refRes.json();
     const latestCommitSha = refData.object.sha;
 
-    // 2. 创建 Git Blob (支持高达 100MB 的大文件)
-    const blobRes = await fetch(`https://api.github.com/repos/${repo}/git/blobs`, {
+    // 2. 读取云端现有的 manifest.json (记录了已上传文件的路径与指纹 hash)
+    let remoteManifest = { version: "1.0.0", files: {} };
+    try {
+        const mfRes = await fetch(`https://api.github.com/repos/${repo}/contents/vault_backup/manifest.json?ref=${branch}`, {
+            headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github.v3.raw" },
+        });
+        if (mfRes.ok) {
+            remoteManifest = JSON.parse(await mfRes.text());
+            remoteManifest.files = remoteManifest.files || {};
+        }
+    } catch (_) {}
+
+    // 3. 构建本地目标文件清单 (path -> contentString)
+    const localFiles = new Map();
+    const selectedChars = backupCatalog.characters.filter((c) => c.checked);
+    const autoBoundWorldNames = new Set();
+    const selectedCharSafeKeys = new Set();
+
+    if (selectedChars.length > 0) {
+        for (let i = 0; i < selectedChars.length; i++) {
+            const c = selectedChars[i];
+            const charKey = toSafeCloudKey(c.avatar || c.name);
+            selectedCharSafeKeys.add(charKey);
+
+            if (backupCatalog.includeBoundWorldWithChar && c.boundWorld) {
+                autoBoundWorldNames.add(c.boundWorld);
+            }
+
+            onProgress(`正在扫描本地角色 (${i + 1}/${selectedChars.length}): ${c.name}...`);
+
+            let pngBase64 = null;
+            try {
+                const imgRes = await fetch(`/characters/${encodeURIComponent(c.avatar)}`);
+                if (imgRes.ok) {
+                    const blob = await imgRes.blob();
+                    pngBase64 = await blobToBase64(blob);
+                }
+            } catch (_) {}
+
+            const charPath = `vault_backup/characters/${charKey}.json`;
+            localFiles.set(
+                charPath,
+                JSON.stringify({
+                    name: c.name,
+                    avatar: c.avatar,
+                    boundWorld: c.boundWorld,
+                    pngBase64,
+                })
+            );
+
+            if (backupCatalog.includeChatsWithChar) {
+                const chatMetas = await fetchCharacterChats(c.avatar, false);
+                for (const meta of chatMetas) {
+                    const fName = stripFileExt(meta.file_name);
+                    const rawChat = await fetchRawChatArray(c.name, c.avatar, fName);
+                    if (rawChat.length) {
+                        const slotKey = toSafeCloudKey(fName);
+                        const chatPath = `vault_backup/chats/${charKey}/${slotKey}.json`;
+                        localFiles.set(
+                            chatPath,
+                            JSON.stringify({
+                                charName: c.name,
+                                avatar: c.avatar,
+                                fileName: fName,
+                                chat: rawChat,
+                            })
+                        );
+                    }
+                }
+            }
+        }
+
+        localFiles.set(
+            "vault_backup/vault_meta.json",
+            JSON.stringify({
+                vaultNotes: settings.notes,
+                vaultPinned: settings.pinned,
+            })
+        );
+    }
+
+    // 世界书独立文件
+    const targetWorldNames = new Set([
+        ...backupCatalog.worlds.filter((w) => w.checked).map((w) => w.name),
+        ...autoBoundWorldNames,
+    ]);
+    for (const wName of targetWorldNames) {
+        try {
+            const wRes = await fetch("/api/worldinfo/get", {
+                method: "POST",
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ name: wName }),
+            });
+            if (wRes.ok) {
+                const wContent = await wRes.json();
+                const wPath = `vault_backup/worlds/${toSafeCloudKey(wName)}.json`;
+                localFiles.set(wPath, JSON.stringify({ name: wName, data: wContent }));
+            }
+        } catch (_) {}
+    }
+
+    // 美化主题
+    const selectedThemes = backupCatalog.themes.filter((t) => t.checked);
+    if (selectedThemes.length > 0 || backupCatalog.includeCustomCss) {
+        const raw = backupCatalog.rawSettingsSnapshot || {};
+        localFiles.set(
+            "vault_backup/themes.json",
+            JSON.stringify({
+                includeCustomCss: backupCatalog.includeCustomCss,
+                activeTheme: raw.theme,
+                customCss: raw.power_user?.custom_css || raw.custom_css || "",
+                powerUserStyle: raw.power_user || {},
+                themeItems: selectedThemes.map((t) => t.data),
+            })
+        );
+    }
+
+    // 对话预设
+    const selectedPresets = backupCatalog.presets.filter((p) => p.checked);
+    if (selectedPresets.length > 0) {
+        const raw = backupCatalog.rawSettingsSnapshot || {};
+        localFiles.set(
+            "vault_backup/presets.json",
+            JSON.stringify({
+                items: selectedPresets,
+                oaiSettings: raw.oai_settings || {},
+            })
+        );
+    }
+
+    // 第三方插件
+    const selectedExts = backupCatalog.extensions.filter((e) => e.checked);
+    if (selectedExts.length > 0) {
+        const filteredExtSettings = {};
+        for (const ext of selectedExts) {
+            if (extension_settings[ext.displayName]) filteredExtSettings[ext.displayName] = extension_settings[ext.displayName];
+            if (extension_settings[ext.id]) filteredExtSettings[ext.id] = extension_settings[ext.id];
+        }
+        localFiles.set(
+            "vault_backup/extensions.json",
+            JSON.stringify({
+                installList: selectedExts.map((e) => ({ name: e.id, displayName: e.displayName, url: e.url })),
+                extensionSettings: filteredExtSettings,
+                customExtUrls: settings.customExtUrls,
+            })
+        );
+    }
+
+    // 4. 增量比对：找出新增/修改的文件，以及需要镜像删除的文件
+    const changedEntries = [];
+    const newManifestFiles = { ...remoteManifest.files };
+
+    for (const [path, content] of localFiles.entries()) {
+        const hash = quickHash(content);
+        if (remoteManifest.files[path]?.hash !== hash) {
+            changedEntries.push({ path, content, hash });
+        }
+    }
+
+    const deletedPaths = [];
+    if (settings.mirrorDeleteCloud) {
+        for (const remotePath of Object.keys(remoteManifest.files)) {
+            if (localFiles.has(remotePath)) continue;
+
+            // 如果该云端文件属于某个角色旗下的聊天档位，仅当本次勾选了该角色时才执行镜像清理
+            if (remotePath.startsWith("vault_backup/chats/")) {
+                const parts = remotePath.split("/");
+                const charKey = parts[2];
+                if (selectedCharSafeKeys.has(charKey) && backupCatalog.includeChatsWithChar) {
+                    deletedPaths.push(remotePath);
+                }
+            } else if (remotePath.startsWith("vault_backup/characters/") && selectedChars.length > 0) {
+                deletedPaths.push(remotePath);
+            } else if (remotePath.startsWith("vault_backup/worlds/") && targetWorldNames.size > 0) {
+                deletedPaths.push(remotePath);
+            }
+        }
+    }
+
+    if (changedEntries.length === 0 && deletedPaths.length === 0) {
+        onProgress("云端已是最新状态，没有任何文件发生变动（0 流量秒级跳过）！");
+        if (window.toastr) toastr.success("云端已是最新，无需重复上传");
+        return;
+    }
+
+    // 5. 仅为有变动的文件创建 Git Blob
+    const treeItems = [];
+    for (let i = 0; i < changedEntries.length; i++) {
+        const item = changedEntries[i];
+        onProgress(`正在增量上传变动文件 (${i + 1}/${changedEntries.length}): ${item.path.split("/").pop()}...`);
+        const blobRes = await fetch(`https://api.github.com/repos/${repo}/git/blobs`, {
+            method: "POST",
+            headers: ghHeaders,
+            body: JSON.stringify({ content: item.content, encoding: "utf-8" }),
+        });
+        if (!blobRes.ok) throw new Error(`上传文件块失败: ${item.path}`);
+        const blobData = await blobRes.json();
+
+        treeItems.push({
+            path: item.path,
+            mode: "100644",
+            type: "blob",
+            sha: blobData.sha,
+        });
+        newManifestFiles[item.path] = { hash: item.hash, sha: blobData.sha, updatedAt: Date.now() };
+    }
+
+    // 处理镜像删除项（在 Git Tree 中将 sha 设为 null 即可从分支移除该文件）
+    for (const delPath of deletedPaths) {
+        treeItems.push({
+            path: delPath,
+            mode: "100644",
+            type: "blob",
+            sha: null,
+        });
+        delete newManifestFiles[delPath];
+    }
+
+    // 更新云端 manifest.json
+    const updatedManifestStr = JSON.stringify({
+        version: "1.0.0",
+        timestamp: Date.now(),
+        files: newManifestFiles,
+    });
+    const mfBlobRes = await fetch(`https://api.github.com/repos/${repo}/git/blobs`, {
         method: "POST",
         headers: ghHeaders,
-        body: JSON.stringify({ content: jsonStr, encoding: "utf-8" }),
+        body: JSON.stringify({ content: updatedManifestStr, encoding: "utf-8" }),
     });
-    if (!blobRes.ok) throw new Error(`创建数据块失败 (HTTP ${blobRes.status})`);
-    const blobData = await blobRes.json();
+    if (!mfBlobRes.ok) throw new Error("更新云端索引清单失败");
+    const mfBlobData = await mfBlobRes.json();
+    treeItems.push({
+        path: "vault_backup/manifest.json",
+        mode: "100644",
+        type: "blob",
+        sha: mfBlobData.sha,
+    });
 
-    // 3. 创建 Git Tree
+    // 6. 提交 Git Tree 与 Commit
+    onProgress("正在合并云端版本树...");
     const treeRes = await fetch(`https://api.github.com/repos/${repo}/git/trees`, {
         method: "POST",
         headers: ghHeaders,
         body: JSON.stringify({
             base_tree: latestCommitSha,
-            tree: [{ path: "st_vault_backup.json", mode: "100644", type: "blob", sha: blobData.sha }],
+            tree: treeItems,
         }),
     });
-    if (!treeRes.ok) throw new Error(`创建目录树失败 (HTTP ${treeRes.status})`);
+    if (!treeRes.ok) throw new Error(`更新目录树失败 (HTTP ${treeRes.status})`);
     const treeData = await treeRes.json();
 
-    // 4. 创建 Commit 并更新分支引用
     const commitRes = await fetch(`https://api.github.com/repos/${repo}/git/commits`, {
         method: "POST",
         headers: ghHeaders,
         body: JSON.stringify({
-            message: `Backup via 存档管家 1.0.0 (${new Date().toISOString()})`,
+            message: `Incremental Sync: +${changedEntries.length} updated, -${deletedPaths.length} removed`,
             tree: treeData.sha,
             parents: [latestCommitSha],
         }),
     });
-    if (!commitRes.ok) throw new Error(`提交版本失败 (HTTP ${commitRes.status})`);
+    if (!commitRes.ok) throw new Error("创建提交记录失败");
     const commitData = await commitRes.json();
 
     const updateRefRes = await fetch(`https://api.github.com/repos/${repo}/git/refs/heads/${branch}`, {
@@ -2520,28 +2762,89 @@ async function uploadBackupToGitHub(onProgress) {
         headers: ghHeaders,
         body: JSON.stringify({ sha: commitData.sha }),
     });
-    if (!updateRefRes.ok) throw new Error(`更新分支指针失败 (HTTP ${updateRefRes.status})`);
+    if (!updateRefRes.ok) throw new Error("更新分支指针失败");
 
-    onProgress("云端同步成功！数据已安全保存至 GitHub 仓库。");
-    if (window.toastr) toastr.success("GitHub 云端备份成功");
+    const summaryMsg = `增量同步完成！本次仅上传 ${changedEntries.length} 个变动文件${deletedPaths.length ? `，镜像清理 ${deletedPaths.length} 个旧文件` : ""}。`;
+    onProgress(summaryMsg);
+    if (window.toastr) toastr.success(summaryMsg);
 }
 
-async function restoreBackupFromGitHub(onProgress) {
+// 从 GitHub 增量目录结构完整恢复（同时兼容旧单体文件）
+async function restoreIncrementalFromGitHub(onProgress) {
     const settings = getSettings();
     const token = $("#cv-gh-token").val()?.trim() || settings.ghToken;
     const repo = $("#cv-gh-repo").val()?.trim() || settings.ghRepo;
     if (!token || !repo) throw new Error("请先填写 GitHub Token 和仓库名");
 
-    onProgress("正在从 GitHub 云端拉取备份包...");
-    const apiUrl = `https://api.github.com/repos/${repo}/contents/st_vault_backup.json`;
-    const res = await fetch(apiUrl, {
-        headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github.v3.raw" },
+    const rawHeaders = { Authorization: `Bearer ${token}`, Accept: "application/vnd.github.v3.raw" };
+
+    onProgress("正在读取 GitHub 云端备份索引...");
+
+    const mfRes = await fetch(`https://api.github.com/repos/${repo}/contents/vault_backup/manifest.json`, {
+        headers: rawHeaders,
     });
 
-    if (!res.ok) throw new Error(`拉取失败 (HTTP ${res.status})`);
-    const text = await res.text();
-    const pack = JSON.parse(text);
-    await restoreFromBackupPackage(pack, onProgress);
+    // 若未找到增量目录，回退检查是否有单文件包 st_vault_backup.json
+    if (!mfRes.ok) {
+        const singleRes = await fetch(`https://api.github.com/repos/${repo}/contents/st_vault_backup.json`, {
+            headers: rawHeaders,
+        });
+        if (!singleRes.ok) throw new Error("未在仓库中找到备份数据");
+        const pack = JSON.parse(await singleRes.text());
+        await restoreFromBackupPackage(pack, onProgress);
+        return;
+    }
+
+    const manifest = JSON.parse(await mfRes.text());
+    const filePaths = Object.keys(manifest.files || {});
+    if (!filePaths.length) throw new Error("云端索引为空");
+
+    const assembledPack = {
+        version: "1.0.0",
+        timestamp: manifest.timestamp || Date.now(),
+        modules: {
+            charactersAndChats: { characters: [], vaultNotes: {}, vaultPinned: [] },
+            worlds: [],
+        },
+    };
+
+    const charMap = new Map();
+
+    // 批量拉取云端增量文件并组装还原
+    for (let i = 0; i < filePaths.length; i++) {
+        const path = filePaths[i];
+        onProgress(`正在从云端拉取数据 (${i + 1}/${filePaths.length}): ${path.split("/").pop()}...`);
+
+        const fRes = await fetch(`https://api.github.com/repos/${repo}/contents/${path}`, { headers: rawHeaders });
+        if (!fRes.ok) continue;
+        const data = JSON.parse(await fRes.text());
+
+        if (path === "vault_backup/vault_meta.json") {
+            assembledPack.modules.charactersAndChats.vaultNotes = data.vaultNotes || {};
+            assembledPack.modules.charactersAndChats.vaultPinned = data.vaultPinned || [];
+        } else if (path === "vault_backup/themes.json") {
+            assembledPack.modules.themes = data;
+        } else if (path === "vault_backup/presets.json") {
+            assembledPack.modules.presets = data;
+        } else if (path === "vault_backup/extensions.json") {
+            assembledPack.modules.extensions = data;
+        } else if (path.startsWith("vault_backup/worlds/")) {
+            assembledPack.modules.worlds.push(data);
+        } else if (path.startsWith("vault_backup/characters/")) {
+            const key = data.avatar || data.name;
+            const existing = charMap.get(key) || { chats: [] };
+            charMap.set(key, { ...data, chats: existing.chats });
+        } else if (path.startsWith("vault_backup/chats/")) {
+            const key = data.avatar || data.charName;
+            if (!charMap.has(key)) {
+                charMap.set(key, { name: data.charName, avatar: data.avatar, chats: [] });
+            }
+            charMap.get(key).chats.push({ fileName: data.fileName, chat: data.chat });
+        }
+    }
+
+    assembledPack.modules.charactersAndChats.characters = Array.from(charMap.values());
+    await restoreFromBackupPackage(assembledPack, onProgress);
 }
 
 /* =========================================================
@@ -2592,7 +2895,6 @@ async function buildFullTextIndex(showToast = true) {
     if (currentKw) renderSearchResults(currentKw);
 }
 
-// 专门针对单个角色的所有档位快速建立索引（在角色详情页搜索时秒级响应）
 async function ensureSingleCharIndexed(chid) {
     const ctx = getContext();
     const c = ctx?.characters?.[chid];
@@ -2808,7 +3110,7 @@ async function runEmptySlotCleaner() {
 }
 
 /* =========================================================
-   12. 插件启动入口（零侵入式启动，不干渉酒馆原生首页）
+   12. 插件启动入口
    ========================================================= */
 jQuery(() => {
     injectMasterStyles();
