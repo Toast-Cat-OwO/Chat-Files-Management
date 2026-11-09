@@ -36,18 +36,20 @@ let searchScope = "global"; // global | char
 let modalOpenTimestamp = 0;
 let historyStatePushed = false;
 
-// 导出目录状态
+// 导出目录状态（六大模块：角色卡、用户人设、世界书、美化主题、对话预设、插件）
 let backupCatalog = {
     characters: [],
+    personas: [],
     worlds: [],
     themes: [],
     includeCustomCss: true,
     presets: [],
     extensions: [],
-    personas: [],
-    includePersona: true,
     includeChatsWithChar: true,
     includeBoundWorldWithChar: true,
+    includeAvatarWithPersona: true,
+    includeBoundWorldWithPersona: true,
+    defaultPersonaAvatar: "",
     rawSettingsSnapshot: {},
 };
 
@@ -61,15 +63,15 @@ let restoreCatalog = {
     vaultPinned: [],
     includeChats: true,
     includeVaultMeta: true,
+    personas: [],
+    defaultPersonaAvatar: "",
+    includePersonaAvatars: true,
     worlds: [],
     themes: null,
     presets: [],
     oaiSettings: null,
     extensions: [],
-    personas: [],
-    includePersona: true,
     customExtUrls: {},
-    cloudContext: null,
 };
 
 /* =========================================================
@@ -777,6 +779,15 @@ function resolveChidByAvatar(avatar, fallbackChid = null) {
     return fallbackChid;
 }
 
+// 从 power_user 中剥离人设专属字段，确保美化与人设互不干扰
+function stripPersonaFieldsFromPowerUser(pu = {}) {
+    const clone = { ...(pu || {}) };
+    delete clone.personas;
+    delete clone.persona_descriptions;
+    delete clone.default_persona;
+    return clone;
+}
+
 function quickHash(str = "") {
     let h1 = 0xdeadbeef ^ str.length;
     let h2 = 0x41c6ce57 ^ str.length;
@@ -856,6 +867,45 @@ function base64ToBlob(dataUrl) {
     const u8arr = new Uint8Array(n);
     while (n--) u8arr[n] = bstr.charCodeAt(n);
     return new Blob([u8arr], { type: mime });
+}
+
+// 读取用户人设头像原图 Base64
+async function fetchUserAvatarBase64(avatarFile) {
+    if (!avatarFile) return null;
+    for (const url of [
+        `/User Avatars/${encodeURIComponent(avatarFile)}`,
+        `/thumbnail?type=persona&file=${encodeURIComponent(avatarFile)}`,
+    ]) {
+        try {
+            const res = await fetch(url);
+            if (res.ok) {
+                const blob = await res.blob();
+                return await blobToBase64(blob);
+            }
+        } catch (_) {}
+    }
+    return null;
+}
+
+// 按原文件名上传恢复用户人设头像
+async function uploadUserAvatarBlob(avatarFile, base64Data) {
+    if (!avatarFile || !base64Data) return false;
+    try {
+        const blob = base64ToBlob(base64Data);
+        const formData = new FormData();
+        formData.append("avatar", blob, avatarFile);
+        formData.append("overwrite_name", avatarFile);
+        const headers = getRequestHeaders();
+        delete headers["Content-Type"];
+        const res = await fetch("/api/avatars/upload", {
+            method: "POST",
+            headers,
+            body: formData,
+        });
+        return res.ok;
+    } catch (_) {
+        return false;
+    }
 }
 
 /* =========================================================
@@ -1139,7 +1189,7 @@ function initFloatingBall() {
 }
 
 /* =========================================================
-   5. 长按悬浮球：快捷切档菜单
+   5. 长按悬浮球：快捷切档菜单（按三级智能排序）
    ========================================================= */
 async function openQuickSwitchSheet() {
     injectMasterStyles();
@@ -1380,7 +1430,7 @@ window.cvOpenModal = openMainModal;
 window.cvRebuildIndex = () => buildFullTextIndex(true);
 
 /* =========================================================
-   7. 一级视图：角色海报墙
+   7. 一级视图：角色海报墙（置顶带 × 移除 + avatar 动态寻址）
    ========================================================= */
 function renderCharacterGrid() {
     try {
@@ -1773,7 +1823,7 @@ async function renderCharacterSlots(chid) {
 }
 
 /* =========================================================
-   9. 云备份中心（含 User 人设自动打包与恢复）
+   9. 云备份中心（含第 2 大模块：用户人设与头像 Personas）
    ========================================================= */
 async function scanExtensionsWithRealGitUrl() {
     const settings = getSettings();
@@ -1854,39 +1904,6 @@ async function scanExtensionsWithRealGitUrl() {
     return list;
 }
 
-// 扫描获取用户人设列表
-async function scanUserPersonas() {
-    const list = [];
-    try {
-        const res = await fetch("/api/personas/get", {
-            method: "POST",
-            headers: getRequestHeaders(),
-            body: JSON.stringify({}),
-        });
-        if (res.ok) {
-            const data = await res.json();
-            const names = Array.isArray(data?.names) ? data.names : (Array.isArray(data) ? data : []);
-            for (const pName of names) {
-                const nameStr = typeof pName === "string" ? pName : (pName?.name || "");
-                if (nameStr) {
-                    list.push({ name: nameStr, data: pName, checked: true });
-                }
-            }
-        }
-    } catch (_) {}
-
-    // 保底：若 API 未直接返回，从前端下拉框提取
-    if (list.length === 0) {
-        $("#name2_select option, #user_profile_select option").each(function () {
-            const name = $(this).text().trim();
-            if (name && !name.includes("None")) {
-                list.push({ name, data: null, checked: true });
-            }
-        });
-    }
-    return list;
-}
-
 async function loadFullBackupCatalog() {
     const ctx = getContext();
     const chars = ctx?.characters || [];
@@ -1910,6 +1927,8 @@ async function loadFullBackupCatalog() {
     let worldNames = [];
     let themesList = [];
     let presetsList = [];
+    let personaItems = [];
+    let defaultPersonaAvatar = "";
     let fullSettingsObj = {};
 
     try {
@@ -1926,6 +1945,27 @@ async function loadFullBackupCatalog() {
                     ? JSON.parse(sData.settings)
                     : sData.settings || {};
 
+            // 解析用户人设 (Personas)
+            const pu = fullSettingsObj.power_user || {};
+            const personasMap = pu.personas || {};
+            const personaDescs = pu.persona_descriptions || {};
+            defaultPersonaAvatar = pu.default_persona || "";
+
+            for (const [avatarKey, pName] of Object.entries(personasMap)) {
+                const descObj = personaDescs[avatarKey] || {};
+                const boundLorebook = descObj.lorebook || "";
+                if (boundLorebook) boundWorldSet.add(boundLorebook);
+                personaItems.push({
+                    avatar: avatarKey,
+                    name: String(pName || avatarKey),
+                    title: descObj.title || "",
+                    boundWorld: boundLorebook,
+                    descriptor: descObj,
+                    isDefault: avatarKey === defaultPersonaAvatar,
+                    checked: true,
+                });
+            }
+
             if (Array.isArray(sData.themes)) {
                 themesList = sData.themes.map((t) => ({ name: t.name || String(t), data: t, checked: true }));
             } else if (Array.isArray(fullSettingsObj.themes)) {
@@ -1936,7 +1976,7 @@ async function loadFullBackupCatalog() {
             if (activeThemeName && !themesList.some((t) => t.name === activeThemeName)) {
                 themesList.unshift({
                     name: `${activeThemeName} (当前使用)`,
-                    data: { name: activeThemeName, power_user: fullSettingsObj.power_user },
+                    data: { name: activeThemeName, power_user: stripPersonaFieldsFromPowerUser(fullSettingsObj.power_user) },
                     checked: true,
                 });
             }
@@ -1983,19 +2023,20 @@ async function loadFullBackupCatalog() {
     });
 
     const extItems = await scanExtensionsWithRealGitUrl();
-    const personaItems = await scanUserPersonas();
 
     backupCatalog = {
         characters: charItems,
+        personas: personaItems,
         worlds: worldItems,
         themes: themesList,
         includeCustomCss: true,
         presets: presetsList,
         extensions: extItems,
-        personas: personaItems,
-        includePersona: true,
         includeChatsWithChar: true,
         includeBoundWorldWithChar: true,
+        includeAvatarWithPersona: true,
+        includeBoundWorldWithPersona: true,
+        defaultPersonaAvatar,
         rawSettingsSnapshot: fullSettingsObj,
     };
 }
@@ -2032,14 +2073,14 @@ async function renderBackupCenterView(tab = backupSubTab) {
     const settings = getSettings();
     const $body = $("#cv-body-content");
 
-    if (tab === "export" && backupCatalog.characters.length === 0) {
+    if (tab === "export" && backupCatalog.characters.length === 0 && backupCatalog.personas.length === 0) {
         $body.html(`
             <div class="cv-detail-header">
               <span class="cv-pill" id="cv-backup-back"><i class="fa-solid fa-arrow-left"></i> 返回海报墙</span>
               <div style="font-weight:600;font-size:15px;">云备份</div>
             </div>
             <div style="text-align:center;padding:30px;opacity:0.7;">
-              <i class="fa-solid fa-spinner fa-spin"></i> 正在扫描本地角色卡、世界书、美化主题、预设、人设与插件...
+              <i class="fa-solid fa-spinner fa-spin"></i> 正在扫描本地角色卡、用户人设、世界书、美化主题、预设与插件...
             </div>
         `);
         $("#cv-backup-back").on("click", () => renderCharacterGrid());
@@ -2049,6 +2090,7 @@ async function renderBackupCenterView(tab = backupSubTab) {
     let tabBodyHtml = "";
 
     if (tab === "export") {
+        // ==================== 栏位 A：备份导出 ====================
         tabBodyHtml = `
             <!-- 1. 角色卡与关联世界书/聊天档位 -->
             <div class="cv-acc-card open" data-section="characters">
@@ -2092,14 +2134,54 @@ async function renderBackupCenterView(tab = backupSubTab) {
               </div>
             </div>
 
-            <!-- 2. 世界书 (World Info) -->
+            <!-- 2. 用户人设与头像 (Personas) -->
+            <div class="cv-acc-card" data-section="personas">
+              <div class="cv-acc-header">
+                <div class="cv-acc-left">
+                  <input type="checkbox" class="cv-master-cb" data-cat="personas" ${backupCatalog.personas.some(p => p.checked) ? "checked" : ""} />
+                  <div>
+                    <div class="cv-acc-title">用户人设与头像 (Personas)</div>
+                    <div class="cv-acc-sub">打包主控人设设定、头像原图、角色绑定关系与人设专属世界书</div>
+                  </div>
+                </div>
+                <span class="cv-acc-badge" id="cv-count-personas">${backupCatalog.personas.filter(p => p.checked).length}/${backupCatalog.personas.length}</span>
+                <i class="fa-solid fa-chevron-down cv-acc-arrow"></i>
+              </div>
+              <div class="cv-acc-body">
+                <div class="cv-sub-toolbar">
+                  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+                    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                      <input type="checkbox" id="cv-opt-persona-avatar" ${backupCatalog.includeAvatarWithPersona ? "checked" : ""} /> 含头像原图
+                    </label>
+                    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                      <input type="checkbox" id="cv-opt-persona-world" ${backupCatalog.includeBoundWorldWithPersona ? "checked" : ""} /> 人设专属世界书跟随导出
+                    </label>
+                  </div>
+                  <div style="display:flex;gap:6px;">
+                    <span class="cv-pill cv-batch-btn" data-cat="personas" data-val="1" style="padding:2px 8px;font-size:11px;">全选</span>
+                    <span class="cv-pill cv-batch-btn" data-cat="personas" data-val="0" style="padding:2px 8px;font-size:11px;">全不选</span>
+                  </div>
+                </div>
+                <div class="cv-sub-grid">
+                  ${backupCatalog.personas.length ? backupCatalog.personas.map((p, idx) => `
+                    <label class="cv-sub-item" title="${escapeHtml(p.name)}${p.title ? ` (${p.title})` : ""}${p.boundWorld ? ` [世界书: ${p.boundWorld}]` : ""}">
+                      <input type="checkbox" class="cv-item-cb" data-cat="personas" data-idx="${idx}" ${p.checked ? "checked" : ""} />
+                      <span>${escapeHtml(p.name)}${p.title ? ` · ${escapeHtml(p.title)}` : ""}</span>
+                      ${p.boundWorld ? `<i class="fa-solid fa-book-atlas" style="font-size:10px;opacity:0.65;margin-left:auto;" title="含人设世界书"></i>` : ""}
+                    </label>
+                  `).join("") : `<div style="opacity:0.6;font-size:12px;">暂无自定义用户人设</div>`}
+                </div>
+              </div>
+            </div>
+
+            <!-- 3. 世界书 (World Info) -->
             <div class="cv-acc-card" data-section="worlds">
               <div class="cv-acc-header">
                 <div class="cv-acc-left">
                   <input type="checkbox" class="cv-master-cb" data-cat="worlds" ${backupCatalog.worlds.some(w => w.checked) ? "checked" : ""} />
                   <div>
                     <div class="cv-acc-title">世界书 (World Info)</div>
-                    <div class="cv-acc-sub">已默认排除角色关联的世界书，仅勾选全局/独立世界书</div>
+                    <div class="cv-acc-sub">已默认排除角色与人设关联的世界书，仅勾选全局/独立世界书</div>
                   </div>
                 </div>
                 <span class="cv-acc-badge" id="cv-count-worlds">${backupCatalog.worlds.filter(w => w.checked).length}/${backupCatalog.worlds.length}</span>
@@ -2118,41 +2200,9 @@ async function renderBackupCenterView(tab = backupSubTab) {
                     <label class="cv-sub-item" title="${escapeHtml(w.name)}">
                       <input type="checkbox" class="cv-item-cb" data-cat="worlds" data-idx="${idx}" ${w.checked ? "checked" : ""} />
                       <span>${escapeHtml(w.name)}</span>
-                      ${w.isBound ? `<span style="font-size:10px;opacity:0.6;margin-left:auto;">角色关联</span>` : ""}
+                      ${w.isBound ? `<span style="font-size:10px;opacity:0.6;margin-left:auto;">关联</span>` : ""}
                     </label>
                   `).join("") : `<div style="opacity:0.6;font-size:12px;">暂无世界书</div>`}
-                </div>
-              </div>
-            </div>
-
-            <!-- 3. 用户人设 (Personas) -->
-            <div class="cv-acc-card" data-section="personas">
-              <div class="cv-acc-header">
-                <div class="cv-acc-left">
-                  <input type="checkbox" class="cv-master-cb" data-cat="personas" ${backupCatalog.personas.some(p => p.checked) ? "checked" : ""} />
-                  <div>
-                    <div class="cv-acc-title">用户人设 (Personas)</div>
-                    <div class="cv-acc-sub">包含你的昵称、头像和人设描述，防止恢复后聊天档位身份错位</div>
-                  </div>
-                </div>
-                <span class="cv-acc-badge" id="cv-count-personas">${backupCatalog.personas.filter(p => p.checked).length}/${backupCatalog.personas.length}</span>
-                <i class="fa-solid fa-chevron-down cv-acc-arrow"></i>
-              </div>
-              <div class="cv-acc-body">
-                <div class="cv-sub-toolbar">
-                  <span>勾选要导出的用户人设：</span>
-                  <div style="display:flex;gap:6px;">
-                    <span class="cv-pill cv-batch-btn" data-cat="personas" data-val="1" style="padding:2px 8px;font-size:11px;">全选</span>
-                    <span class="cv-pill cv-batch-btn" data-cat="personas" data-val="0" style="padding:2px 8px;font-size:11px;">全不选</span>
-                  </div>
-                </div>
-                <div class="cv-sub-grid">
-                  ${backupCatalog.personas.length ? backupCatalog.personas.map((p, idx) => `
-                    <label class="cv-sub-item" title="${escapeHtml(p.name)}">
-                      <input type="checkbox" class="cv-item-cb" data-cat="personas" data-idx="${idx}" ${p.checked ? "checked" : ""} />
-                      <span>${escapeHtml(p.name)}</span>
-                    </label>
-                  `).join("") : `<div style="opacity:0.6;font-size:12px;">暂无独立用户人设</div>`}
                 </div>
               </div>
             </div>
@@ -2164,7 +2214,7 @@ async function renderBackupCenterView(tab = backupSubTab) {
                   <input type="checkbox" class="cv-master-cb" data-cat="themes" ${(backupCatalog.includeCustomCss || backupCatalog.themes.some(t => t.checked)) ? "checked" : ""} />
                   <div>
                     <div class="cv-acc-title">美化主题与自定义 CSS</div>
-                    <div class="cv-acc-sub">包含第三方美化配色方案、毛玻璃参数与自定义 CSS 代码</div>
+                    <div class="cv-acc-sub">已与人设数据解耦，仅包含配色方案、毛玻璃参数与自定义 CSS</div>
                   </div>
                 </div>
                 <span class="cv-acc-badge" id="cv-count-themes">${backupCatalog.themes.filter(t => t.checked).length + (backupCatalog.includeCustomCss ? 1 : 0)}/${backupCatalog.themes.length + 1}</span>
@@ -2267,7 +2317,7 @@ async function renderBackupCenterView(tab = backupSubTab) {
             <div class="cv-acc-card" style="padding:12px 14px;">
               <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:10px;cursor:pointer;opacity:0.9;">
                 <input type="checkbox" id="cv-mirror-delete-cb" ${settings.mirrorDeleteCloud ? "checked" : ""} />
-                <span>镜像清理：上传云备份时，同步移除云端多余的旧档位</span>
+                <span>镜像清理：上传云备份时，同步移除云端多余的旧档位与人设</span>
               </label>
               <div class="cv-action-row" style="margin-top:0;">
                 <button type="button" class="cv-btn-block" id="cv-export-local-btn">
@@ -2280,10 +2330,11 @@ async function renderBackupCenterView(tab = backupSubTab) {
             </div>
         `;
     } else {
+        // ==================== 栏位 B：恢复还原 ====================
         tabBodyHtml = `
             <div class="cv-acc-card" style="padding:12px 14px;">
               <div style="font-size:12px;opacity:0.75;margin-bottom:8px;">
-                第 1 步：选择备份来源读取目录清单（读取后可自由勾选需要恢复的模块与角色）：
+                第 1 步：选择备份来源读取目录清单（读取后可自由勾选需要恢复的模块与角色/人设）：
               </div>
               <div class="cv-action-row" style="margin-top:0;">
                 <button type="button" class="cv-btn-block primary" id="cv-load-cloud-preview-btn">
@@ -2330,6 +2381,7 @@ async function renderBackupCenterView(tab = backupSubTab) {
     $("#cv-backup-back").on("click", () => renderCharacterGrid());
     $("#cv-rescan-local-btn").on("click", async () => {
         backupCatalog.characters = [];
+        backupCatalog.personas = [];
         await renderBackupCenterView("export");
     });
 
@@ -2360,7 +2412,7 @@ async function renderBackupCenterView(tab = backupSubTab) {
 
 function bindExportTabEvents($body, settings) {
     const updateBadges = () => {
-        ["characters", "worlds", "personas", "presets", "extensions"].forEach((cat) => {
+        ["characters", "personas", "worlds", "presets", "extensions"].forEach((cat) => {
             const arr = backupCatalog[cat] || [];
             const checkedCount = arr.filter((x) => x.checked).length;
             $(`#cv-count-${cat}`).text(`${checkedCount}/${arr.length}`);
@@ -2447,6 +2499,14 @@ function bindExportTabEvents($body, settings) {
         backupCatalog.includeBoundWorldWithChar = $(this).prop("checked");
     });
 
+    $("#cv-opt-persona-avatar").on("change", function () {
+        backupCatalog.includeAvatarWithPersona = $(this).prop("checked");
+    });
+
+    $("#cv-opt-persona-world").on("change", function () {
+        backupCatalog.includeBoundWorldWithPersona = $(this).prop("checked");
+    });
+
     $("#cv-mirror-delete-cb").on("change", function () {
         settings.mirrorDeleteCloud = $(this).prop("checked");
         saveSettings();
@@ -2486,6 +2546,9 @@ function bindExportTabEvents($body, settings) {
     });
 }
 
+/* =========================================================
+   恢复还原栏位：预览备份包内容并支持按需勾选恢复（含用户人设）
+   ========================================================= */
 function renderRestorePreviewHtml() {
     if (!restoreCatalog.loaded) {
         return `
@@ -2545,7 +2608,41 @@ function renderRestorePreviewHtml() {
           </div>
         </div>
 
-        <!-- 2. 恢复世界书 -->
+        <!-- 2. 恢复用户人设与头像 -->
+        <div class="cv-acc-card" data-rsection="personas">
+          <div class="cv-acc-header">
+            <div class="cv-acc-left">
+              <input type="checkbox" class="cv-rmaster-cb" data-rcat="personas" ${r.personas.some(p => p.checked) ? "checked" : ""} />
+              <div>
+                <div class="cv-acc-title">用户人设与头像 (Personas)</div>
+                <div class="cv-acc-sub">自动按原头像文件名还原人设，确保所有历史聊天档位无缝衔接</div>
+              </div>
+            </div>
+            <span class="cv-acc-badge" id="cv-rcount-personas">${r.personas.filter(p => p.checked).length}/${r.personas.length}</span>
+            <i class="fa-solid fa-chevron-down cv-acc-arrow"></i>
+          </div>
+          <div class="cv-acc-body">
+            <div class="cv-sub-toolbar">
+              <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                <input type="checkbox" id="cv-ropt-persona-avatars" ${r.includePersonaAvatars ? "checked" : ""} /> 恢复人设头像原图
+              </label>
+              <div style="display:flex;gap:6px;">
+                <span class="cv-pill cv-rbatch-btn" data-rcat="personas" data-val="1" style="padding:2px 8px;font-size:11px;">全选</span>
+                <span class="cv-pill cv-rbatch-btn" data-rcat="personas" data-val="0" style="padding:2px 8px;font-size:11px;">全不选</span>
+              </div>
+            </div>
+            <div class="cv-sub-grid">
+              ${r.personas.length ? r.personas.map((p, idx) => `
+                <label class="cv-sub-item" title="${escapeHtml(p.name)}${p.title ? ` (${p.title})` : ""}">
+                  <input type="checkbox" class="cv-ritem-cb" data-rcat="personas" data-idx="${idx}" ${p.checked ? "checked" : ""} />
+                  <span>${escapeHtml(p.name)}${p.title ? ` · ${escapeHtml(p.title)}` : ""}</span>
+                </label>
+              `).join("") : `<div style="opacity:0.6;font-size:12px;">备份中无用户人设数据</div>`}
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. 恢复世界书 -->
         <div class="cv-acc-card" data-rsection="worlds">
           <div class="cv-acc-header">
             <div class="cv-acc-left">
@@ -2573,38 +2670,6 @@ function renderRestorePreviewHtml() {
                   <span>${escapeHtml(w.name)}</span>
                 </label>
               `).join("") : `<div style="opacity:0.6;font-size:12px;">备份中无世界书数据</div>`}
-            </div>
-          </div>
-        </div>
-
-        <!-- 3. 恢复用户人设 -->
-        <div class="cv-acc-card" data-rsection="personas">
-          <div class="cv-acc-header">
-            <div class="cv-acc-left">
-              <input type="checkbox" class="cv-rmaster-cb" data-rcat="personas" ${r.personas.some(p => p.checked) ? "checked" : ""} />
-              <div>
-                <div class="cv-acc-title">用户人设 (Personas)</div>
-                <div class="cv-acc-sub">还原你的昵称与人设档案</div>
-              </div>
-            </div>
-            <span class="cv-acc-badge" id="cv-rcount-personas">${r.personas.filter(p => p.checked).length}/${r.personas.length}</span>
-            <i class="fa-solid fa-chevron-down cv-acc-arrow"></i>
-          </div>
-          <div class="cv-acc-body">
-            <div class="cv-sub-toolbar">
-              <span>选择人设：</span>
-              <div style="display:flex;gap:6px;">
-                <span class="cv-pill cv-rbatch-btn" data-rcat="personas" data-val="1" style="padding:2px 8px;font-size:11px;">全选</span>
-                <span class="cv-pill cv-rbatch-btn" data-rcat="personas" data-val="0" style="padding:2px 8px;font-size:11px;">全不选</span>
-              </div>
-            </div>
-            <div class="cv-sub-grid">
-              ${r.personas.length ? r.personas.map((p, idx) => `
-                <label class="cv-sub-item" title="${escapeHtml(p.name)}">
-                  <input type="checkbox" class="cv-ritem-cb" data-rcat="personas" data-idx="${idx}" ${p.checked ? "checked" : ""} />
-                  <span>${escapeHtml(p.name)}</span>
-                </label>
-              `).join("") : `<div style="opacity:0.6;font-size:12px;">备份中无用户人设数据</div>`}
             </div>
           </div>
         </div>
@@ -2702,7 +2767,7 @@ function bindRestoreTabEvents($body, settings) {
         const r = restoreCatalog;
 
         const updateRBadges = () => {
-            ["characters", "worlds", "personas", "presets", "extensions"].forEach((cat) => {
+            ["characters", "personas", "worlds", "presets", "extensions"].forEach((cat) => {
                 const arr = r[cat] || [];
                 const checkedCount = arr.filter((x) => x.checked).length;
                 $(`#cv-rcount-${cat}`).text(`${checkedCount}/${arr.length}`);
@@ -2767,6 +2832,10 @@ function bindRestoreTabEvents($body, settings) {
             r.includeVaultMeta = $(this).prop("checked");
         });
 
+        $("#cv-ropt-persona-avatars").on("change", function () {
+            r.includePersonaAvatars = $(this).prop("checked");
+        });
+
         $("#cv-execute-selective-restore-btn").on("click", async () => {
             try {
                 await executeSelectiveRestore((msg) => $("#cv-backup-progress").text(msg));
@@ -2818,13 +2887,13 @@ function populateRestoreCatalogFromPack(pack, label) {
         checked: true,
     }));
 
-    const worlds = (mods.worlds || []).map((w) => ({
-        ...w,
+    const personas = (mods.personas?.items || []).map((p) => ({
+        ...p,
         checked: true,
     }));
 
-    const personas = (mods.personas || []).map((p) => ({
-        ...p,
+    const worlds = (mods.worlds || []).map((w) => ({
+        ...w,
         checked: true,
     }));
 
@@ -2855,22 +2924,23 @@ function populateRestoreCatalogFromPack(pack, label) {
         vaultPinned: mods.charactersAndChats?.vaultPinned || [],
         includeChats: true,
         includeVaultMeta: true,
+        personas,
+        defaultPersonaAvatar: mods.personas?.defaultPersona || "",
+        includePersonaAvatars: true,
         worlds,
         themes: mods.themes
             ? {
                   includeCustomCss: Boolean(mods.themes.includeCustomCss),
                   activeTheme: mods.themes.activeTheme,
                   customCss: mods.themes.customCss,
-                  powerUserStyle: mods.themes.powerUserStyle,
+                  powerUserStyle: stripPersonaFieldsFromPowerUser(mods.themes.powerUserStyle),
                   themeItems,
               }
             : null,
         presets,
         oaiSettings: mods.presets?.oaiSettings || null,
         extensions,
-        personas,
         customExtUrls: mods.extensions?.customExtUrls || {},
-        cloudContext: null,
     };
 }
 
@@ -2896,7 +2966,11 @@ async function loadCloudBackupIntoRestoreCatalog(onProgress) {
     const settings = getSettings();
     const token = $("#cv-gh-token").val()?.trim() || settings.ghToken;
     const repo = $("#cv-gh-repo").val()?.trim() || settings.ghRepo;
-    if (!token || !repo) throw new Error("请先填写 GitHub Token 和仓库名");
+    if (!token || !repo) {
+        ghConfigExpanded = true;
+        renderBackupCenterView("restore");
+        throw new Error("请先在上方填写 GitHub Token 和仓库名");
+    }
 
     settings.ghToken = token;
     settings.ghRepo = repo;
@@ -2929,8 +3003,8 @@ async function loadCloudBackupIntoRestoreCatalog(onProgress) {
         timestamp: manifest.timestamp || Date.now(),
         modules: {
             charactersAndChats: { characters: [], vaultNotes: {}, vaultPinned: [] },
+            personas: { defaultPersona: "", items: [] },
             worlds: [],
-            personas: [],
         },
     };
 
@@ -2952,6 +3026,9 @@ async function loadCloudBackupIntoRestoreCatalog(onProgress) {
         if (path === "vault_backup/vault_meta.json") {
             assembledPack.modules.charactersAndChats.vaultNotes = data.vaultNotes || {};
             assembledPack.modules.charactersAndChats.vaultPinned = data.vaultPinned || [];
+            if (data.defaultPersona) {
+                assembledPack.modules.personas.defaultPersona = data.defaultPersona;
+            }
         } else if (path === "vault_backup/themes.json") {
             assembledPack.modules.themes = data;
         } else if (path === "vault_backup/presets.json") {
@@ -2961,7 +3038,7 @@ async function loadCloudBackupIntoRestoreCatalog(onProgress) {
         } else if (path.startsWith("vault_backup/worlds/")) {
             assembledPack.modules.worlds.push(data);
         } else if (path.startsWith("vault_backup/personas/")) {
-            assembledPack.modules.personas.push(data);
+            assembledPack.modules.personas.items.push(data);
         } else if (path.startsWith("vault_backup/characters/")) {
             const key = data.avatar || data.name;
             const existing = charMap.get(key) || { chats: [] };
@@ -2979,6 +3056,7 @@ async function loadCloudBackupIntoRestoreCatalog(onProgress) {
     populateRestoreCatalogFromPack(assembledPack, `GitHub 云端 (${repo})`);
 }
 
+// 执行勾选恢复（包含用户人设原文件名头像上传与设定还原）
 async function executeSelectiveRestore(onProgress) {
     const r = restoreCatalog;
     if (!r.loaded) throw new Error("请先载入备份源");
@@ -2991,7 +3069,7 @@ async function executeSelectiveRestore(onProgress) {
     const selectedThemes = (r.themes?.themeItems || []).filter((t) => t.checked);
     const restoreCustomCss = Boolean(r.themes?.includeCustomCss);
 
-    // 1. 恢复插件
+    // 1. 恢复第三方插件
     if (selectedExts.length > 0) {
         for (let i = 0; i < selectedExts.length; i++) {
             const ext = selectedExts[i];
@@ -3027,22 +3105,18 @@ async function executeSelectiveRestore(onProgress) {
         }
     }
 
-    // 3. 恢复用户人设
-    if (selectedPersonas.length > 0) {
+    // 3. 恢复用户人设头像原图（确保后续打开聊天档位时头像文件名 100% 匹配）
+    if (selectedPersonas.length > 0 && r.includePersonaAvatars) {
         for (let i = 0; i < selectedPersonas.length; i++) {
             const p = selectedPersonas[i];
-            onProgress(`正在恢复用户人设 (${i + 1}/${selectedPersonas.length}): ${p.name}...`);
-            try {
-                await fetch("/api/personas/edit", {
-                    method: "POST",
-                    headers: getRequestHeaders(),
-                    body: JSON.stringify({ name: p.name, data: p.data }),
-                });
-            } catch (_) {}
+            if (p.pngBase64 && p.avatar) {
+                onProgress(`正在恢复用户人设头像 (${i + 1}/${selectedPersonas.length}): ${p.name}...`);
+                await uploadUserAvatarBlob(p.avatar, p.pngBase64);
+            }
         }
     }
 
-    // 4. 恢复角色卡与聊天记录
+    // 4. 恢复角色卡与聊天档位
     if (selectedChars.length > 0 || r.includeVaultMeta) {
         const settings = getSettings();
         if (r.includeVaultMeta) {
@@ -3092,9 +3166,9 @@ async function executeSelectiveRestore(onProgress) {
         }
     }
 
-    // 5. 恢复美化主题与对话预设
-    if (selectedThemes.length > 0 || restoreCustomCss || selectedPresets.length > 0) {
-        onProgress("正在恢复所选美化主题与预设参数...");
+    // 5. 统一写入 settings.json（用户人设配置 + 美化主题 + 对话预设，互不覆盖）
+    if (selectedPersonas.length > 0 || selectedThemes.length > 0 || restoreCustomCss || selectedPresets.length > 0) {
+        onProgress("正在写入人设设定、美化与预设配置...");
         try {
             const res = await fetch("/api/settings/get", {
                 method: "POST",
@@ -3108,14 +3182,36 @@ async function executeSelectiveRestore(onProgress) {
                         ? JSON.parse(sData.settings)
                         : sData.settings || {};
 
+                currentSettings.power_user = currentSettings.power_user || {};
+
+                // 5a. 若勾选了美化 CSS，合并非人设字段
                 if (restoreCustomCss && r.themes?.powerUserStyle) {
                     if (r.themes.activeTheme) currentSettings.theme = r.themes.activeTheme;
+                    const cleanStyle = stripPersonaFieldsFromPowerUser(r.themes.powerUserStyle);
                     currentSettings.power_user = {
-                        ...(currentSettings.power_user || {}),
-                        ...r.themes.powerUserStyle,
+                        ...currentSettings.power_user,
+                        ...cleanStyle,
                     };
                 }
 
+                // 5b. 若勾选了用户人设，精准合并 personas 与 persona_descriptions
+                if (selectedPersonas.length > 0) {
+                    currentSettings.power_user.personas = currentSettings.power_user.personas || {};
+                    currentSettings.power_user.persona_descriptions = currentSettings.power_user.persona_descriptions || {};
+
+                    for (const p of selectedPersonas) {
+                        if (!p.avatar) continue;
+                        currentSettings.power_user.personas[p.avatar] = p.name;
+                        if (p.descriptor) {
+                            currentSettings.power_user.persona_descriptions[p.avatar] = p.descriptor;
+                        }
+                    }
+                    if (r.defaultPersonaAvatar && selectedPersonas.some((p) => p.avatar === r.defaultPersonaAvatar)) {
+                        currentSettings.power_user.default_persona = r.defaultPersonaAvatar;
+                    }
+                }
+
+                // 5c. 保存独立主题文件
                 for (const t of selectedThemes) {
                     if (t.data && t.data.name) {
                         await fetch("/api/themes/save", {
@@ -3126,6 +3222,7 @@ async function executeSelectiveRestore(onProgress) {
                     }
                 }
 
+                // 5d. 保存预设文件
                 if (selectedPresets.length > 0) {
                     if (r.oaiSettings) {
                         currentSettings.oai_settings = {
@@ -3158,6 +3255,7 @@ async function executeSelectiveRestore(onProgress) {
     setTimeout(() => location.reload(), 1600);
 }
 
+// 构建导出备份包（含用户人设与人设绑定世界书）
 async function buildSelectiveBackupPackage(onProgress) {
     const settings = getSettings();
     const pack = {
@@ -3167,8 +3265,10 @@ async function buildSelectiveBackupPackage(onProgress) {
     };
 
     const selectedChars = backupCatalog.characters.filter((c) => c.checked);
+    const selectedPersonas = backupCatalog.personas.filter((p) => p.checked);
     const autoBoundWorldNames = new Set();
 
+    // 1. 打包角色卡与聊天记录
     if (selectedChars.length > 0) {
         const charDataList = [];
         for (let i = 0; i < selectedChars.length; i++) {
@@ -3216,6 +3316,39 @@ async function buildSelectiveBackupPackage(onProgress) {
         };
     }
 
+    // 2. 打包用户人设与头像
+    if (selectedPersonas.length > 0) {
+        const personaDataList = [];
+        for (let i = 0; i < selectedPersonas.length; i++) {
+            const p = selectedPersonas[i];
+            onProgress(`正在打包用户人设 (${i + 1}/${selectedPersonas.length}): ${p.name}...`);
+
+            if (backupCatalog.includeBoundWorldWithPersona && p.boundWorld) {
+                autoBoundWorldNames.add(p.boundWorld);
+            }
+
+            let pngBase64 = null;
+            if (backupCatalog.includeAvatarWithPersona) {
+                pngBase64 = await fetchUserAvatarBase64(p.avatar);
+            }
+
+            personaDataList.push({
+                avatar: p.avatar,
+                name: p.name,
+                title: p.title,
+                boundWorld: p.boundWorld,
+                descriptor: p.descriptor,
+                pngBase64,
+            });
+        }
+
+        pack.modules.personas = {
+            defaultPersona: backupCatalog.defaultPersonaAvatar,
+            items: personaDataList,
+        };
+    }
+
+    // 3. 打包世界书（自动合并角色与人设绑定的专属世界书）
     const targetWorldNames = new Set([
         ...backupCatalog.worlds.filter((w) => w.checked).map((w) => w.name),
         ...autoBoundWorldNames,
@@ -3240,30 +3373,7 @@ async function buildSelectiveBackupPackage(onProgress) {
         pack.modules.worlds = worldsData;
     }
 
-    const selectedPersonas = backupCatalog.personas.filter((p) => p.checked);
-    if (selectedPersonas.length > 0) {
-        onProgress(`正在打包 ${selectedPersonas.length} 个用户人设...`);
-        const personasData = [];
-        for (const p of selectedPersonas) {
-            try {
-                const pRes = await fetch("/api/personas/get", {
-                    method: "POST",
-                    headers: getRequestHeaders(),
-                    body: JSON.stringify({ name: p.name }),
-                });
-                if (pRes.ok) {
-                    const pContent = await pRes.json();
-                    personasData.push({ name: p.name, data: pContent });
-                } else if (p.data) {
-                    personasData.push({ name: p.name, data: p.data });
-                }
-            } catch (_) {
-                if (p.data) personasData.push({ name: p.name, data: p.data });
-            }
-        }
-        pack.modules.personas = personasData;
-    }
-
+    // 4. 打包美化主题（剥离人设字段）
     const selectedThemes = backupCatalog.themes.filter((t) => t.checked);
     if (selectedThemes.length > 0 || backupCatalog.includeCustomCss) {
         onProgress("正在打包美化主题与 CSS...");
@@ -3272,11 +3382,12 @@ async function buildSelectiveBackupPackage(onProgress) {
             includeCustomCss: backupCatalog.includeCustomCss,
             activeTheme: raw.theme,
             customCss: raw.power_user?.custom_css || raw.custom_css || "",
-            powerUserStyle: raw.power_user || {},
+            powerUserStyle: stripPersonaFieldsFromPowerUser(raw.power_user),
             themeItems: selectedThemes.map((t) => t.data),
         };
     }
 
+    // 5. 打包对话预设
     const selectedPresets = backupCatalog.presets.filter((p) => p.checked);
     if (selectedPresets.length > 0) {
         onProgress("正在打包对话预设...");
@@ -3287,6 +3398,7 @@ async function buildSelectiveBackupPackage(onProgress) {
         };
     }
 
+    // 6. 打包第三方插件
     const selectedExts = backupCatalog.extensions.filter((e) => e.checked);
     if (selectedExts.length > 0) {
         onProgress("正在打包插件下载清单与配置...");
@@ -3309,6 +3421,7 @@ async function buildSelectiveBackupPackage(onProgress) {
     return pack;
 }
 
+// 上传云备份（支持按文件独立存储用户人设 `vault_backup/personas/xxx.json`）
 async function uploadIncrementalToGitHub(onProgress) {
     const settings = getSettings();
     const token = $("#cv-gh-token").val()?.trim() || settings.ghToken;
@@ -3354,9 +3467,11 @@ async function uploadIncrementalToGitHub(onProgress) {
 
     const localFiles = new Map();
     const selectedChars = backupCatalog.characters.filter((c) => c.checked);
+    const selectedPersonas = backupCatalog.personas.filter((p) => p.checked);
     const autoBoundWorldNames = new Set();
     const selectedCharSafeKeys = new Set();
 
+    // 1. 扫描角色卡与聊天档位
     if (selectedChars.length > 0) {
         for (let i = 0; i < selectedChars.length; i++) {
             const c = selectedChars[i];
@@ -3410,16 +3525,52 @@ async function uploadIncrementalToGitHub(onProgress) {
                 }
             }
         }
+    }
 
+    // 2. 扫描用户人设与头像
+    if (selectedPersonas.length > 0) {
+        for (let i = 0; i < selectedPersonas.length; i++) {
+            const p = selectedPersonas[i];
+            const pKey = toSafeCloudKey(p.avatar || p.name);
+
+            if (backupCatalog.includeBoundWorldWithPersona && p.boundWorld) {
+                autoBoundWorldNames.add(p.boundWorld);
+            }
+
+            onProgress(`正在扫描用户人设 (${i + 1}/${selectedPersonas.length}): ${p.name}...`);
+
+            let pngBase64 = null;
+            if (backupCatalog.includeAvatarWithPersona) {
+                pngBase64 = await fetchUserAvatarBase64(p.avatar);
+            }
+
+            const personaPath = `vault_backup/personas/${pKey}.json`;
+            localFiles.set(
+                personaPath,
+                JSON.stringify({
+                    avatar: p.avatar,
+                    name: p.name,
+                    title: p.title,
+                    boundWorld: p.boundWorld,
+                    descriptor: p.descriptor,
+                    pngBase64,
+                })
+            );
+        }
+    }
+
+    if (selectedChars.length > 0 || selectedPersonas.length > 0) {
         localFiles.set(
             "vault_backup/vault_meta.json",
             JSON.stringify({
                 vaultNotes: settings.notes,
                 vaultPinned: settings.pinned,
+                defaultPersona: backupCatalog.defaultPersonaAvatar,
             })
         );
     }
 
+    // 3. 扫描世界书
     const targetWorldNames = new Set([
         ...backupCatalog.worlds.filter((w) => w.checked).map((w) => w.name),
         ...autoBoundWorldNames,
@@ -3439,22 +3590,7 @@ async function uploadIncrementalToGitHub(onProgress) {
         } catch (_) {}
     }
 
-    const selectedPersonas = backupCatalog.personas.filter((p) => p.checked);
-    for (const p of selectedPersonas) {
-        try {
-            const pRes = await fetch("/api/personas/get", {
-                method: "POST",
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ name: p.name }),
-            });
-            if (pRes.ok) {
-                const pContent = await pRes.json();
-                const pPath = `vault_backup/personas/${toSafeCloudKey(p.name)}.json`;
-                localFiles.set(pPath, JSON.stringify({ name: p.name, data: pContent }));
-            }
-        } catch (_) {}
-    }
-
+    // 4. 扫描美化主题（剥离人设字段）
     const selectedThemes = backupCatalog.themes.filter((t) => t.checked);
     if (selectedThemes.length > 0 || backupCatalog.includeCustomCss) {
         const raw = backupCatalog.rawSettingsSnapshot || {};
@@ -3464,12 +3600,13 @@ async function uploadIncrementalToGitHub(onProgress) {
                 includeCustomCss: backupCatalog.includeCustomCss,
                 activeTheme: raw.theme,
                 customCss: raw.power_user?.custom_css || raw.custom_css || "",
-                powerUserStyle: raw.power_user || {},
+                powerUserStyle: stripPersonaFieldsFromPowerUser(raw.power_user),
                 themeItems: selectedThemes.map((t) => t.data),
             })
         );
     }
 
+    // 5. 扫描对话预设
     const selectedPresets = backupCatalog.presets.filter((p) => p.checked);
     if (selectedPresets.length > 0) {
         const raw = backupCatalog.rawSettingsSnapshot || {};
@@ -3482,6 +3619,7 @@ async function uploadIncrementalToGitHub(onProgress) {
         );
     }
 
+    // 6. 扫描第三方插件
     const selectedExts = backupCatalog.extensions.filter((e) => e.checked);
     if (selectedExts.length > 0) {
         const filteredExtSettings = {};
@@ -3522,9 +3660,9 @@ async function uploadIncrementalToGitHub(onProgress) {
                 }
             } else if (remotePath.startsWith("vault_backup/characters/") && selectedChars.length > 0) {
                 deletedPaths.push(remotePath);
-            } else if (remotePath.startsWith("vault_backup/worlds/") && targetWorldNames.size > 0) {
-                deletedPaths.push(remotePath);
             } else if (remotePath.startsWith("vault_backup/personas/") && selectedPersonas.length > 0) {
+                deletedPaths.push(remotePath);
+            } else if (remotePath.startsWith("vault_backup/worlds/") && targetWorldNames.size > 0) {
                 deletedPaths.push(remotePath);
             }
         }
@@ -3801,7 +3939,7 @@ async function renderSearchResults(keyword) {
     if (messageHits.length === 0) {
         html += `
             <div style="text-align:center;padding:28px 14px;opacity:0.8;">
-              <div style="margin-bottom:10px;">未找到包含<span>「<b>${escapeHtml(keyword)}</b>」</span>的记录</div>
+              <div style="margin-bottom:10px;">未找到包含「<b>${escapeHtml(keyword)}</b>」的记录</div>
               ${
                   isCharScoped
                       ? `<button type="button" id="cv-switch-global-search" class="cv-pill active" style="padding:8px 16px;">切换为全局搜索所有角色</button>`
