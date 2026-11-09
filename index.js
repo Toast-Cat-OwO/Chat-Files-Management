@@ -44,6 +44,8 @@ let backupCatalog = {
     includeCustomCss: true,
     presets: [],
     extensions: [],
+    personas: [],
+    includePersona: true,
     includeChatsWithChar: true,
     includeBoundWorldWithChar: true,
     rawSettingsSnapshot: {},
@@ -54,18 +56,20 @@ let restoreCatalog = {
     loaded: false,
     sourceType: "", // local | cloud
     sourceLabel: "",
-    characters: [], // { name, avatar, boundWorld, pngBase64, chats, cloudCharFile, cloudChatFiles, checked }
+    characters: [],
     vaultNotes: {},
     vaultPinned: [],
     includeChats: true,
     includeVaultMeta: true,
-    worlds: [],     // { name, data, cloudFile, checked }
-    themes: null,   // { includeCustomCss, activeTheme, customCss, powerUserStyle, themeItems: [{name, data, checked}] }
-    presets: [],    // { name, data, checked }
+    worlds: [],
+    themes: null,
+    presets: [],
     oaiSettings: null,
-    extensions: [], // { name, displayName, url, settingsData, checked }
+    extensions: [],
+    personas: [],
+    includePersona: true,
     customExtUrls: {},
-    cloudContext: null, // { repo, token, rawHeaders }
+    cloudContext: null,
 };
 
 /* =========================================================
@@ -347,7 +351,6 @@ function injectMasterStyles() {
         -webkit-overflow-scrolling: touch;
       }
 
-      /* 置顶栏与一键移除按钮 */
       .cv-pinned-bar { margin-bottom: 16px; }
       .cv-section-label {
         font-size: 12px;
@@ -547,7 +550,6 @@ function injectMasterStyles() {
       .cv-hit-snippet { font-size: 12.5px; line-height: 1.45; word-break: break-word; opacity: 0.9; }
       .cv-highlight-kw { background: rgba(250, 204, 21, 0.85); color: #000; font-weight: 600; padding: 0 3px; border-radius: 3px; }
 
-      /* 云备份双栏分段控制器 */
       .cv-seg-bar {
         display: flex;
         background: var(--cv-card-bg);
@@ -579,7 +581,6 @@ function injectMasterStyles() {
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
       }
 
-      /* 折叠卡片 */
       .cv-acc-card {
         background: var(--cv-card-bg);
         border: 1px solid var(--cv-border);
@@ -814,7 +815,6 @@ function parseChatSlotTimestamp(slot) {
     return 0;
 }
 
-// 智能三级排序：1.当前档位 -> 2.已置顶档位 -> 3.按最后聊天时间倒序
 function sortChatSlotsNewestFirst(chats, currentFileName = "", avatar = "") {
     const cleanCur = stripFileExt(currentFileName);
     const pinnedSet = new Set(
@@ -1139,7 +1139,7 @@ function initFloatingBall() {
 }
 
 /* =========================================================
-   5. 长按悬浮球：快捷切档菜单（按三级智能排序）
+   5. 长按悬浮球：快捷切档菜单
    ========================================================= */
 async function openQuickSwitchSheet() {
     injectMasterStyles();
@@ -1380,7 +1380,7 @@ window.cvOpenModal = openMainModal;
 window.cvRebuildIndex = () => buildFullTextIndex(true);
 
 /* =========================================================
-   7. 一级视图：角色海报墙（置顶带 × 移除 + avatar 动态寻址）
+   7. 一级视图：角色海报墙
    ========================================================= */
 function renderCharacterGrid() {
     try {
@@ -1468,7 +1468,6 @@ function renderCharacterGrid() {
             </div>
         `);
 
-        // 首页直接移除置顶按钮（解决死档无法取消的问题）
         $body.find(".cv-pin-remove").on("click", function (e) {
             e.preventDefault();
             e.stopPropagation();
@@ -1480,7 +1479,6 @@ function renderCharacterGrid() {
             }
         });
 
-        // 点击置顶卡片切档（通过 avatar 动态定位角色）
         $body.find(".cv-pin-chip").on("click", function (e) {
             if ($(e.target).closest(".cv-pin-remove").length) return;
             if (Date.now() - modalOpenTimestamp < 380) return;
@@ -1524,7 +1522,7 @@ async function refreshAllCharCountsGentle() {
 }
 
 /* =========================================================
-   8. 二级视图：角色档位详情（全链路联动改名/删除 + 三级排序）
+   8. 二级视图：角色档位详情
    ========================================================= */
 async function renderCharacterSlots(chid) {
     currentView = "detail";
@@ -1646,7 +1644,6 @@ async function renderCharacterSlots(chid) {
         $(this).closest(".cv-slot-inline-editor").removeClass("show");
     });
 
-    // 保存备注或改名（含置顶、全文索引与当前聊天窗口全链路同步）
     $("#cv-slot-list").on("click", ".cv-inline-save", async function (e) {
         e.stopPropagation();
         const $card = $(this).closest(".cv-slot-card");
@@ -1667,19 +1664,16 @@ async function renderCharacterSlots(chid) {
                 const ok = await renameChatFile(char.avatar, fName, newName);
                 if (ok) {
                     const newKey = getSlotKey(char.avatar, newName);
-                    // 1. 同步备注
                     if (settings.notes[slotKey] !== undefined) {
                         settings.notes[newKey] = settings.notes[slotKey];
                         delete settings.notes[slotKey];
                     }
-                    // 2. 同步置顶列表
                     settings.pinned.forEach((p) => {
                         if (p.avatar === char.avatar && stripFileExt(p.fileName) === fName) {
                             p.fileName = newName;
                             p.charName = char.name;
                         }
                     });
-                    // 3. 同步全文索引
                     if (fullTextIndex.has(slotKey)) {
                         const idxEntry = fullTextIndex.get(slotKey);
                         idxEntry.fileName = newName;
@@ -1688,7 +1682,6 @@ async function renderCharacterSlots(chid) {
                     }
                     saveSettings();
 
-                    // 4. 如果改名的是当前正在聊的档位，通知酒馆重新挂载新文件名
                     if (String(ctx.characterId) === String(chid) && stripFileExt(char.chat) === fName) {
                         char.chat = newName;
                         try { await openCharacterChat(newName); } catch (_) {}
@@ -1755,7 +1748,6 @@ async function renderCharacterSlots(chid) {
             const isDeletingCurrent = String(ctx.characterId) === String(chid) && stripFileExt(char.chat) === fName;
             const ok = await deleteChatFile(char.avatar, fName);
             if (ok) {
-                // 同步清理备注、置顶与全文索引
                 delete settings.notes[slotKey];
                 settings.pinned = settings.pinned.filter(
                     (p) => !(p.avatar === char.avatar && stripFileExt(p.fileName) === fName)
@@ -1763,7 +1755,6 @@ async function renderCharacterSlots(chid) {
                 fullTextIndex.delete(slotKey);
                 saveSettings();
 
-                // 若删除的是当前正在聊的档位，自动切换到剩余最新档位或新建档位
                 if (isDeletingCurrent) {
                     const remaining = await fetchCharacterChats(char.avatar);
                     const sorted = sortChatSlotsNewestFirst(remaining, "", char.avatar);
@@ -1782,7 +1773,7 @@ async function renderCharacterSlots(chid) {
 }
 
 /* =========================================================
-   9. 云备份中心（双栏切换：备份导出 | 恢复还原 + 可折叠配置栏）
+   9. 云备份中心（含 User 人设自动打包与恢复）
    ========================================================= */
 async function scanExtensionsWithRealGitUrl() {
     const settings = getSettings();
@@ -1860,6 +1851,39 @@ async function scanExtensionsWithRealGitUrl() {
     );
 
     saveSettings();
+    return list;
+}
+
+// 扫描获取用户人设列表
+async function scanUserPersonas() {
+    const list = [];
+    try {
+        const res = await fetch("/api/personas/get", {
+            method: "POST",
+            headers: getRequestHeaders(),
+            body: JSON.stringify({}),
+        });
+        if (res.ok) {
+            const data = await res.json();
+            const names = Array.isArray(data?.names) ? data.names : (Array.isArray(data) ? data : []);
+            for (const pName of names) {
+                const nameStr = typeof pName === "string" ? pName : (pName?.name || "");
+                if (nameStr) {
+                    list.push({ name: nameStr, data: pName, checked: true });
+                }
+            }
+        }
+    } catch (_) {}
+
+    // 保底：若 API 未直接返回，从前端下拉框提取
+    if (list.length === 0) {
+        $("#name2_select option, #user_profile_select option").each(function () {
+            const name = $(this).text().trim();
+            if (name && !name.includes("None")) {
+                list.push({ name, data: null, checked: true });
+            }
+        });
+    }
     return list;
 }
 
@@ -1959,6 +1983,7 @@ async function loadFullBackupCatalog() {
     });
 
     const extItems = await scanExtensionsWithRealGitUrl();
+    const personaItems = await scanUserPersonas();
 
     backupCatalog = {
         characters: charItems,
@@ -1967,13 +1992,14 @@ async function loadFullBackupCatalog() {
         includeCustomCss: true,
         presets: presetsList,
         extensions: extItems,
+        personas: personaItems,
+        includePersona: true,
         includeChatsWithChar: true,
         includeBoundWorldWithChar: true,
         rawSettingsSnapshot: fullSettingsObj,
     };
 }
 
-// 渲染 GitHub 可折叠配置栏
 function renderGhConfigBarHtml(settings) {
     const isConfigured = Boolean(settings.ghToken && settings.ghRepo);
     const showInputs = !isConfigured || ghConfigExpanded;
@@ -2013,7 +2039,7 @@ async function renderBackupCenterView(tab = backupSubTab) {
               <div style="font-weight:600;font-size:15px;">云备份</div>
             </div>
             <div style="text-align:center;padding:30px;opacity:0.7;">
-              <i class="fa-solid fa-spinner fa-spin"></i> 正在扫描本地角色卡、世界书、美化主题、预设与插件...
+              <i class="fa-solid fa-spinner fa-spin"></i> 正在扫描本地角色卡、世界书、美化主题、预设、人设与插件...
             </div>
         `);
         $("#cv-backup-back").on("click", () => renderCharacterGrid());
@@ -2023,7 +2049,6 @@ async function renderBackupCenterView(tab = backupSubTab) {
     let tabBodyHtml = "";
 
     if (tab === "export") {
-        // ==================== 栏位 A：备份导出 ====================
         tabBodyHtml = `
             <!-- 1. 角色卡与关联世界书/聊天档位 -->
             <div class="cv-acc-card open" data-section="characters">
@@ -2100,7 +2125,39 @@ async function renderBackupCenterView(tab = backupSubTab) {
               </div>
             </div>
 
-            <!-- 3. 美化主题 -->
+            <!-- 3. 用户人设 (Personas) -->
+            <div class="cv-acc-card" data-section="personas">
+              <div class="cv-acc-header">
+                <div class="cv-acc-left">
+                  <input type="checkbox" class="cv-master-cb" data-cat="personas" ${backupCatalog.personas.some(p => p.checked) ? "checked" : ""} />
+                  <div>
+                    <div class="cv-acc-title">用户人设 (Personas)</div>
+                    <div class="cv-acc-sub">包含你的昵称、头像和人设描述，防止恢复后聊天档位身份错位</div>
+                  </div>
+                </div>
+                <span class="cv-acc-badge" id="cv-count-personas">${backupCatalog.personas.filter(p => p.checked).length}/${backupCatalog.personas.length}</span>
+                <i class="fa-solid fa-chevron-down cv-acc-arrow"></i>
+              </div>
+              <div class="cv-acc-body">
+                <div class="cv-sub-toolbar">
+                  <span>勾选要导出的用户人设：</span>
+                  <div style="display:flex;gap:6px;">
+                    <span class="cv-pill cv-batch-btn" data-cat="personas" data-val="1" style="padding:2px 8px;font-size:11px;">全选</span>
+                    <span class="cv-pill cv-batch-btn" data-cat="personas" data-val="0" style="padding:2px 8px;font-size:11px;">全不选</span>
+                  </div>
+                </div>
+                <div class="cv-sub-grid">
+                  ${backupCatalog.personas.length ? backupCatalog.personas.map((p, idx) => `
+                    <label class="cv-sub-item" title="${escapeHtml(p.name)}">
+                      <input type="checkbox" class="cv-item-cb" data-cat="personas" data-idx="${idx}" ${p.checked ? "checked" : ""} />
+                      <span>${escapeHtml(p.name)}</span>
+                    </label>
+                  `).join("") : `<div style="opacity:0.6;font-size:12px;">暂无独立用户人设</div>`}
+                </div>
+              </div>
+            </div>
+
+            <!-- 4. 美化主题 -->
             <div class="cv-acc-card" data-section="themes">
               <div class="cv-acc-header">
                 <div class="cv-acc-left">
@@ -2136,7 +2193,7 @@ async function renderBackupCenterView(tab = backupSubTab) {
               </div>
             </div>
 
-            <!-- 4. 对话预设 -->
+            <!-- 5. 对话预设 -->
             <div class="cv-acc-card" data-section="presets">
               <div class="cv-acc-header">
                 <div class="cv-acc-left">
@@ -2168,7 +2225,7 @@ async function renderBackupCenterView(tab = backupSubTab) {
               </div>
             </div>
 
-            <!-- 5. 第三方插件清单与配置 -->
+            <!-- 6. 第三方插件清单与配置 -->
             <div class="cv-acc-card" data-section="extensions">
               <div class="cv-acc-header">
                 <div class="cv-acc-left">
@@ -2223,7 +2280,6 @@ async function renderBackupCenterView(tab = backupSubTab) {
             </div>
         `;
     } else {
-        // ==================== 栏位 B：恢复还原 ====================
         tabBodyHtml = `
             <div class="cv-acc-card" style="padding:12px 14px;">
               <div style="font-size:12px;opacity:0.75;margin-bottom:8px;">
@@ -2277,7 +2333,6 @@ async function renderBackupCenterView(tab = backupSubTab) {
         await renderBackupCenterView("export");
     });
 
-    // 切换 GitHub 配置折叠状态
     $("#cv-toggle-gh-box").on("click", () => {
         ghConfigExpanded = !ghConfigExpanded;
         renderBackupCenterView(backupSubTab);
@@ -2289,7 +2344,6 @@ async function renderBackupCenterView(tab = backupSubTab) {
         saveSettings();
     });
 
-    // 顶部双栏切换
     $body.find(".cv-seg-item").on("click", function () {
         const targetTab = $(this).data("btab");
         if (targetTab !== backupSubTab) {
@@ -2304,10 +2358,9 @@ async function renderBackupCenterView(tab = backupSubTab) {
     }
 }
 
-// 绑定「备份导出」页事件
 function bindExportTabEvents($body, settings) {
     const updateBadges = () => {
-        ["characters", "worlds", "presets", "extensions"].forEach((cat) => {
+        ["characters", "worlds", "personas", "presets", "extensions"].forEach((cat) => {
             const arr = backupCatalog[cat] || [];
             const checkedCount = arr.filter((x) => x.checked).length;
             $(`#cv-count-${cat}`).text(`${checkedCount}/${arr.length}`);
@@ -2433,9 +2486,6 @@ function bindExportTabEvents($body, settings) {
     });
 }
 
-/* =========================================================
-   恢复还原栏位：预览备份包内容并支持按需勾选恢复
-   ========================================================= */
 function renderRestorePreviewHtml() {
     if (!restoreCatalog.loaded) {
         return `
@@ -2527,7 +2577,39 @@ function renderRestorePreviewHtml() {
           </div>
         </div>
 
-        <!-- 3. 恢复美化主题 -->
+        <!-- 3. 恢复用户人设 -->
+        <div class="cv-acc-card" data-rsection="personas">
+          <div class="cv-acc-header">
+            <div class="cv-acc-left">
+              <input type="checkbox" class="cv-rmaster-cb" data-rcat="personas" ${r.personas.some(p => p.checked) ? "checked" : ""} />
+              <div>
+                <div class="cv-acc-title">用户人设 (Personas)</div>
+                <div class="cv-acc-sub">还原你的昵称与人设档案</div>
+              </div>
+            </div>
+            <span class="cv-acc-badge" id="cv-rcount-personas">${r.personas.filter(p => p.checked).length}/${r.personas.length}</span>
+            <i class="fa-solid fa-chevron-down cv-acc-arrow"></i>
+          </div>
+          <div class="cv-acc-body">
+            <div class="cv-sub-toolbar">
+              <span>选择人设：</span>
+              <div style="display:flex;gap:6px;">
+                <span class="cv-pill cv-rbatch-btn" data-rcat="personas" data-val="1" style="padding:2px 8px;font-size:11px;">全选</span>
+                <span class="cv-pill cv-rbatch-btn" data-rcat="personas" data-val="0" style="padding:2px 8px;font-size:11px;">全不选</span>
+              </div>
+            </div>
+            <div class="cv-sub-grid">
+              ${r.personas.length ? r.personas.map((p, idx) => `
+                <label class="cv-sub-item" title="${escapeHtml(p.name)}">
+                  <input type="checkbox" class="cv-ritem-cb" data-rcat="personas" data-idx="${idx}" ${p.checked ? "checked" : ""} />
+                  <span>${escapeHtml(p.name)}</span>
+                </label>
+              `).join("") : `<div style="opacity:0.6;font-size:12px;">备份中无用户人设数据</div>`}
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. 恢复美化主题 -->
         <div class="cv-acc-card" data-rsection="themes">
           <div class="cv-acc-header">
             <div class="cv-acc-left">
@@ -2558,7 +2640,7 @@ function renderRestorePreviewHtml() {
           </div>
         </div>
 
-        <!-- 4. 恢复对话预设 -->
+        <!-- 5. 恢复对话预设 -->
         <div class="cv-acc-card" data-rsection="presets">
           <div class="cv-acc-header">
             <div class="cv-acc-left">
@@ -2583,7 +2665,7 @@ function renderRestorePreviewHtml() {
           </div>
         </div>
 
-        <!-- 5. 恢复第三方插件 -->
+        <!-- 6. 恢复第三方插件 -->
         <div class="cv-acc-card" data-rsection="extensions">
           <div class="cv-acc-header">
             <div class="cv-acc-left">
@@ -2620,7 +2702,7 @@ function bindRestoreTabEvents($body, settings) {
         const r = restoreCatalog;
 
         const updateRBadges = () => {
-            ["characters", "worlds", "presets", "extensions"].forEach((cat) => {
+            ["characters", "worlds", "personas", "presets", "extensions"].forEach((cat) => {
                 const arr = r[cat] || [];
                 const checkedCount = arr.filter((x) => x.checked).length;
                 $(`#cv-rcount-${cat}`).text(`${checkedCount}/${arr.length}`);
@@ -2698,7 +2780,6 @@ function bindRestoreTabEvents($body, settings) {
         bindPreviewInteractions();
     }
 
-    // 载入本地文件预览
     $("#cv-load-local-preview-btn").on("click", () => $("#cv-import-file-input").trigger("click"));
     $("#cv-import-file-input").on("change", async function (e) {
         const file = e.target.files?.[0];
@@ -2716,7 +2797,6 @@ function bindRestoreTabEvents($body, settings) {
         }
     });
 
-    // 读取云端备份清单预览
     $("#cv-load-cloud-preview-btn").on("click", async () => {
         try {
             await loadCloudBackupIntoRestoreCatalog((msg) => $("#cv-backup-progress").text(msg));
@@ -2729,7 +2809,6 @@ function bindRestoreTabEvents($body, settings) {
     });
 }
 
-// 将单包结构解析进 restoreCatalog
 function populateRestoreCatalogFromPack(pack, label) {
     if (!pack || !pack.modules) throw new Error("无效的备份包格式");
     const mods = pack.modules;
@@ -2741,6 +2820,11 @@ function populateRestoreCatalogFromPack(pack, label) {
 
     const worlds = (mods.worlds || []).map((w) => ({
         ...w,
+        checked: true,
+    }));
+
+    const personas = (mods.personas || []).map((p) => ({
+        ...p,
         checked: true,
     }));
 
@@ -2784,12 +2868,12 @@ function populateRestoreCatalogFromPack(pack, label) {
         presets,
         oaiSettings: mods.presets?.oaiSettings || null,
         extensions,
+        personas,
         customExtUrls: mods.extensions?.customExtUrls || {},
         cloudContext: null,
     };
 }
 
-// GitHub Blob 流式读取助手（突破 1MB Contents API 限制，支持 100MB）
 async function fetchGitHubFileText(repo, token, path, sha = null) {
     const rawHeaders = {
         Authorization: `Bearer ${token}`,
@@ -2808,7 +2892,6 @@ async function fetchGitHubFileText(repo, token, path, sha = null) {
     return await res.text();
 }
 
-// 从 GitHub 云端加载备份清单到 restoreCatalog
 async function loadCloudBackupIntoRestoreCatalog(onProgress) {
     const settings = getSettings();
     const token = $("#cv-gh-token").val()?.trim() || settings.ghToken;
@@ -2841,13 +2924,13 @@ async function loadCloudBackupIntoRestoreCatalog(onProgress) {
     const filePaths = Object.keys(filesMap);
     if (!filePaths.length) throw new Error("云端备份索引为空");
 
-    // 先拉取轻量级配置文件与列表信息
     const assembledPack = {
         version: "1.0.0",
         timestamp: manifest.timestamp || Date.now(),
         modules: {
             charactersAndChats: { characters: [], vaultNotes: {}, vaultPinned: [] },
             worlds: [],
+            personas: [],
         },
     };
 
@@ -2877,6 +2960,8 @@ async function loadCloudBackupIntoRestoreCatalog(onProgress) {
             assembledPack.modules.extensions = data;
         } else if (path.startsWith("vault_backup/worlds/")) {
             assembledPack.modules.worlds.push(data);
+        } else if (path.startsWith("vault_backup/personas/")) {
+            assembledPack.modules.personas.push(data);
         } else if (path.startsWith("vault_backup/characters/")) {
             const key = data.avatar || data.name;
             const existing = charMap.get(key) || { chats: [] };
@@ -2894,19 +2979,19 @@ async function loadCloudBackupIntoRestoreCatalog(onProgress) {
     populateRestoreCatalogFromPack(assembledPack, `GitHub 云端 (${repo})`);
 }
 
-// 按用户在「恢复还原」页勾选的子项执行精准恢复
 async function executeSelectiveRestore(onProgress) {
     const r = restoreCatalog;
     if (!r.loaded) throw new Error("请先载入备份源");
 
     const selectedExts = r.extensions.filter((e) => e.checked);
     const selectedWorlds = r.worlds.filter((w) => w.checked);
+    const selectedPersonas = r.personas.filter((p) => p.checked);
     const selectedChars = r.characters.filter((c) => c.checked);
     const selectedPresets = r.presets.filter((p) => p.checked);
     const selectedThemes = (r.themes?.themeItems || []).filter((t) => t.checked);
     const restoreCustomCss = Boolean(r.themes?.includeCustomCss);
 
-    // 1. 恢复勾选的第三方插件
+    // 1. 恢复插件
     if (selectedExts.length > 0) {
         for (let i = 0; i < selectedExts.length; i++) {
             const ext = selectedExts[i];
@@ -2927,7 +3012,7 @@ async function executeSelectiveRestore(onProgress) {
         saveSettings();
     }
 
-    // 2. 恢复勾选的世界书
+    // 2. 恢复世界书
     if (selectedWorlds.length > 0) {
         for (let i = 0; i < selectedWorlds.length; i++) {
             const w = selectedWorlds[i];
@@ -2942,7 +3027,22 @@ async function executeSelectiveRestore(onProgress) {
         }
     }
 
-    // 3. 恢复勾选的角色卡与聊天记录
+    // 3. 恢复用户人设
+    if (selectedPersonas.length > 0) {
+        for (let i = 0; i < selectedPersonas.length; i++) {
+            const p = selectedPersonas[i];
+            onProgress(`正在恢复用户人设 (${i + 1}/${selectedPersonas.length}): ${p.name}...`);
+            try {
+                await fetch("/api/personas/edit", {
+                    method: "POST",
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ name: p.name, data: p.data }),
+                });
+            } catch (_) {}
+        }
+    }
+
+    // 4. 恢复角色卡与聊天记录
     if (selectedChars.length > 0 || r.includeVaultMeta) {
         const settings = getSettings();
         if (r.includeVaultMeta) {
@@ -2992,7 +3092,7 @@ async function executeSelectiveRestore(onProgress) {
         }
     }
 
-    // 4. 恢复勾选的美化主题与对话预设
+    // 5. 恢复美化主题与对话预设
     if (selectedThemes.length > 0 || restoreCustomCss || selectedPresets.length > 0) {
         onProgress("正在恢复所选美化主题与预设参数...");
         try {
@@ -3058,7 +3158,6 @@ async function executeSelectiveRestore(onProgress) {
     setTimeout(() => location.reload(), 1600);
 }
 
-// 构建导出备份包
 async function buildSelectiveBackupPackage(onProgress) {
     const settings = getSettings();
     const pack = {
@@ -3141,6 +3240,30 @@ async function buildSelectiveBackupPackage(onProgress) {
         pack.modules.worlds = worldsData;
     }
 
+    const selectedPersonas = backupCatalog.personas.filter((p) => p.checked);
+    if (selectedPersonas.length > 0) {
+        onProgress(`正在打包 ${selectedPersonas.length} 个用户人设...`);
+        const personasData = [];
+        for (const p of selectedPersonas) {
+            try {
+                const pRes = await fetch("/api/personas/get", {
+                    method: "POST",
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ name: p.name }),
+                });
+                if (pRes.ok) {
+                    const pContent = await pRes.json();
+                    personasData.push({ name: p.name, data: pContent });
+                } else if (p.data) {
+                    personasData.push({ name: p.name, data: p.data });
+                }
+            } catch (_) {
+                if (p.data) personasData.push({ name: p.name, data: p.data });
+            }
+        }
+        pack.modules.personas = personasData;
+    }
+
     const selectedThemes = backupCatalog.themes.filter((t) => t.checked);
     if (selectedThemes.length > 0 || backupCatalog.includeCustomCss) {
         onProgress("正在打包美化主题与 CSS...");
@@ -3186,7 +3309,6 @@ async function buildSelectiveBackupPackage(onProgress) {
     return pack;
 }
 
-// 上传云备份
 async function uploadIncrementalToGitHub(onProgress) {
     const settings = getSettings();
     const token = $("#cv-gh-token").val()?.trim() || settings.ghToken;
@@ -3317,6 +3439,22 @@ async function uploadIncrementalToGitHub(onProgress) {
         } catch (_) {}
     }
 
+    const selectedPersonas = backupCatalog.personas.filter((p) => p.checked);
+    for (const p of selectedPersonas) {
+        try {
+            const pRes = await fetch("/api/personas/get", {
+                method: "POST",
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ name: p.name }),
+            });
+            if (pRes.ok) {
+                const pContent = await pRes.json();
+                const pPath = `vault_backup/personas/${toSafeCloudKey(p.name)}.json`;
+                localFiles.set(pPath, JSON.stringify({ name: p.name, data: pContent }));
+            }
+        } catch (_) {}
+    }
+
     const selectedThemes = backupCatalog.themes.filter((t) => t.checked);
     if (selectedThemes.length > 0 || backupCatalog.includeCustomCss) {
         const raw = backupCatalog.rawSettingsSnapshot || {};
@@ -3385,6 +3523,8 @@ async function uploadIncrementalToGitHub(onProgress) {
             } else if (remotePath.startsWith("vault_backup/characters/") && selectedChars.length > 0) {
                 deletedPaths.push(remotePath);
             } else if (remotePath.startsWith("vault_backup/worlds/") && targetWorldNames.size > 0) {
+                deletedPaths.push(remotePath);
+            } else if (remotePath.startsWith("vault_backup/personas/") && selectedPersonas.length > 0) {
                 deletedPaths.push(remotePath);
             }
         }
@@ -3661,7 +3801,7 @@ async function renderSearchResults(keyword) {
     if (messageHits.length === 0) {
         html += `
             <div style="text-align:center;padding:28px 14px;opacity:0.8;">
-              <div style="margin-bottom:10px;">未找到包含「<b>${escapeHtml(keyword)}</b>」的记录</div>
+              <div style="margin-bottom:10px;">未找到包含<span>「<b>${escapeHtml(keyword)}</b>」</span>的记录</div>
               ${
                   isCharScoped
                       ? `<button type="button" id="cv-switch-global-search" class="cv-pill active" style="padding:8px 16px;">切换为全局搜索所有角色</button>`
@@ -3831,7 +3971,6 @@ jQuery(() => {
 
     initFloatingBall();
 
-    // 当在酒馆外部新建或切换聊天时，仅将该角色的档位数标记为待刷新，零网络请求不干扰首页
     if (eventSource && event_types?.CHAT_CHANGED) {
         eventSource.on(event_types.CHAT_CHANGED, () => {
             try {
