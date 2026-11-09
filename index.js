@@ -20,7 +20,7 @@ const defaultSettings = {
     ghToken: "",
     ghRepo: "",
     ghBranch: "main",
-    mirrorDeleteCloud: false, // 是否开启镜像清理云端已删文件
+    mirrorDeleteCloud: false,
 };
 
 const fullTextIndex = new Map();
@@ -29,7 +29,7 @@ let currentView = "grid"; // grid | detail | search | backup
 let selectedCharId = null;
 let currentFilter = "recent";
 let searchScope = "global"; // global | char
-let modalOpenTimestamp = 0; // 防点击穿透时间戳锁
+let modalOpenTimestamp = 0;
 let historyStatePushed = false;
 
 let backupCatalog = {
@@ -620,7 +620,7 @@ function injectMasterStyles() {
 }
 
 /* =========================================================
-   1. 基础工具、哈希指纹与时间排序函数
+   1. 基础工具、指纹计算与时间排序
    ========================================================= */
 function getSettings() {
     extension_settings[EXT_NAME] = extension_settings[EXT_NAME] || {};
@@ -684,7 +684,6 @@ function applyThemeClass($el) {
     if (mode === "light") $el.addClass("cv-theme-light");
 }
 
-// 快速计算文本指纹（用于增量备份对比文件是否有变动）
 function quickHash(str = "") {
     let h1 = 0xdeadbeef ^ str.length;
     let h2 = 0x41c6ce57 ^ str.length;
@@ -1601,7 +1600,7 @@ async function renderCharacterSlots(chid) {
 }
 
 /* =========================================================
-   9. 五大模块精细勾选备份中心 + 真·增量云同步（支持镜像清理开关）
+   9. 五大模块精细勾选备份中心（含“世界书默认排除角色关联”一键筛选）
    ========================================================= */
 async function scanExtensionsWithRealGitUrl() {
     const settings = getSettings();
@@ -1746,11 +1745,15 @@ async function loadFullBackupCatalog() {
         }
     } catch (_) {}
 
-    const worldItems = worldNames.map((wName) => ({
-        name: wName,
-        isBound: boundWorldSet.has(wName),
-        checked: true,
-    }));
+    const worldItems = worldNames.map((wName) => {
+        const isBound = boundWorldSet.has(wName);
+        return {
+            name: wName,
+            isBound,
+            // 如果该世界书已被角色关联，默认不勾选（避免与角色卡自带世界书重复）
+            checked: !isBound,
+        };
+    });
 
     const extItems = await scanExtensionsWithRealGitUrl();
 
@@ -1772,75 +1775,6 @@ async function renderBackupCenterView() {
     $("#cv-search-bar-wrap, #cv-filter-bar").hide();
     const settings = getSettings();
     const $body = $("#cv-body-content");
-
-    $body.html(`
-        <div class="cv-detail-header">
-          <span class="cv-pill" id="cv-backup-back"><i class="fa-solid fa-arrow-left"></i> 返回海报墙</span>
-          <div style="font-weight:600;font-size:15px;">模块化备份与增量云同步</div>
-        </div>
-        <div style="text-align:center;padding:30px;opacity:0.7;">
-          <i class="fa-solid fa-spinner fa-spin"></i> 正在扫描角色、世界书、美化主题、预设与插件 Git 地址...
-        </div>
-    `);
-
-    $("#cv-backup-back").on("click", () => renderCharacterGrid());
-
-    await loadFullBackupCatalog();
-
-    const charGridHtml = backupCatalog.characters.map((c, idx) => `
-        <label class="cv-sub-item cv-char-backup-item" data-name="${escapeHtml(c.name.toLowerCase())}" title="${escapeHtml(c.name)}${c.boundWorld ? ` (绑定世界书: ${c.boundWorld})` : ""}">
-          <input type="checkbox" class="cv-item-cb" data-cat="characters" data-idx="${idx}" ${c.checked ? "checked" : ""} />
-          <span>${escapeHtml(c.name)}</span>
-          ${c.boundWorld ? `<i class="fa-solid fa-book-atlas" style="font-size:10px;opacity:0.65;margin-left:auto;" title="含专属世界书"></i>` : ""}
-        </label>
-    `).join("");
-
-    const worldGridHtml = backupCatalog.worlds.length
-        ? backupCatalog.worlds.map((w, idx) => `
-            <label class="cv-sub-item" title="${escapeHtml(w.name)}">
-              <input type="checkbox" class="cv-item-cb" data-cat="worlds" data-idx="${idx}" ${w.checked ? "checked" : ""} />
-              <span>${escapeHtml(w.name)}</span>
-              ${w.isBound ? `<span style="font-size:10px;opacity:0.6;margin-left:auto;">关联</span>` : ""}
-            </label>
-          `).join("")
-        : `<div style="opacity:0.6;font-size:12px;">暂无独立世界书</div>`;
-
-    const themeGridHtml = `
-        <label class="cv-sub-item" style="grid-column:1 / -1;border-color:var(--cv-accent);">
-          <input type="checkbox" id="cv-cb-custom-css" ${backupCatalog.includeCustomCss ? "checked" : ""} />
-          <span><b>全局自定义美化 CSS 与界面参数</b> (power_user / custom_css)</span>
-        </label>
-        ${backupCatalog.themes.map((t, idx) => `
-          <label class="cv-sub-item" title="${escapeHtml(t.name)}">
-            <input type="checkbox" class="cv-item-cb" data-cat="themes" data-idx="${idx}" ${t.checked ? "checked" : ""} />
-            <span>${escapeHtml(t.name)}</span>
-          </label>
-        `).join("")}
-    `;
-
-    const presetGridHtml = backupCatalog.presets.length
-        ? backupCatalog.presets.map((p, idx) => `
-            <label class="cv-sub-item" title="${escapeHtml(p.name)}">
-              <input type="checkbox" class="cv-item-cb" data-cat="presets" data-idx="${idx}" ${p.checked ? "checked" : ""} />
-              <span>${escapeHtml(p.name)}</span>
-            </label>
-          `).join("")
-        : `<div style="opacity:0.6;font-size:12px;">将默认导出当前全局采样与对话预设参数</div>`;
-
-    const extRowsHtml = backupCatalog.extensions.length
-        ? backupCatalog.extensions.map((ext, idx) => `
-            <div class="cv-ext-row">
-              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-                <label style="display:flex;align-items:center;gap:8px;font-weight:600;font-size:12.5px;cursor:pointer;">
-                  <input type="checkbox" class="cv-item-cb" data-cat="extensions" data-idx="${idx}" ${ext.checked ? "checked" : ""} />
-                  <span>${escapeHtml(ext.displayName)}</span>
-                </label>
-                <span style="font-size:11px;opacity:0.65;">${ext.url ? "已识别 Git 地址" : "未检测到远程地址"}</span>
-              </div>
-              <input type="text" class="cv-input-field cv-ext-url-input" data-idx="${idx}" data-extname="${escapeHtml(ext.displayName)}" placeholder="GitHub 仓库地址 (如 https://github.com/作者/插件名)" value="${escapeHtml(ext.url)}" />
-            </div>
-          `).join("")
-        : `<div style="opacity:0.6;font-size:12px;">未检测到第三方插件</div>`;
 
     $body.html(`
         <div class="cv-detail-header">
@@ -1882,32 +1816,50 @@ async function renderBackupCenterView() {
               </div>
             </div>
             <input type="text" class="cv-input-field" id="cv-char-filter-input" placeholder="输入角色名快速筛选..." style="margin-bottom:8px;padding:5px 10px;" />
-            <div class="cv-sub-grid" id="cv-backup-char-grid">${charGridHtml}</div>
+            <div class="cv-sub-grid" id="cv-backup-char-grid">
+              ${backupCatalog.characters.map((c, idx) => `
+                <label class="cv-sub-item cv-char-backup-item" data-name="${escapeHtml(c.name.toLowerCase())}" title="${escapeHtml(c.name)}${c.boundWorld ? ` (绑定世界书: ${c.boundWorld})` : ""}">
+                  <input type="checkbox" class="cv-item-cb" data-cat="characters" data-idx="${idx}" ${c.checked ? "checked" : ""} />
+                  <span>${escapeHtml(c.name)}</span>
+                  ${c.boundWorld ? `<i class="fa-solid fa-book-atlas" style="font-size:10px;opacity:0.65;margin-left:auto;" title="含专属世界书"></i>` : ""}
+                </label>
+              `).join("")}
+            </div>
           </div>
         </div>
 
-        <!-- 2. 世界书 -->
+        <!-- 2. 世界书 (World Info) -->
         <div class="cv-acc-card" data-section="worlds">
           <div class="cv-acc-header">
             <div class="cv-acc-left">
-              <input type="checkbox" class="cv-master-cb" data-cat="worlds" checked />
+              <input type="checkbox" class="cv-master-cb" data-cat="worlds" ${backupCatalog.worlds.some(w => w.checked) ? "checked" : ""} />
               <div>
                 <div class="cv-acc-title">世界书 (World Info)</div>
-                <div class="cv-acc-sub">可单独勾选需要导出的全局或独立世界书</div>
+                <div class="cv-acc-sub">已自动默认排除角色关联的世界书，仅勾选全局/独立世界书</div>
               </div>
             </div>
-            <span class="cv-acc-badge" id="cv-count-worlds">${backupCatalog.worlds.length}/${backupCatalog.worlds.length}</span>
+            <span class="cv-acc-badge" id="cv-count-worlds">${backupCatalog.worlds.filter(w => w.checked).length}/${backupCatalog.worlds.length}</span>
             <i class="fa-solid fa-chevron-down cv-acc-arrow"></i>
           </div>
           <div class="cv-acc-body">
             <div class="cv-sub-toolbar">
-              <span>选择要导出的世界书文件：</span>
+              <div style="display:flex;gap:6px;">
+                <span class="cv-pill" id="cv-btn-only-global-worlds" style="padding:2px 8px;font-size:11px;" title="仅勾选未被任何角色卡绑定的全局世界书">仅勾全局世界书</span>
+              </div>
               <div style="display:flex;gap:6px;">
                 <span class="cv-pill cv-batch-btn" data-cat="worlds" data-val="1" style="padding:2px 8px;font-size:11px;">全选</span>
                 <span class="cv-pill cv-batch-btn" data-cat="worlds" data-val="0" style="padding:2px 8px;font-size:11px;">全不选</span>
               </div>
             </div>
-            <div class="cv-sub-grid">${worldGridHtml}</div>
+            <div class="cv-sub-grid">
+              ${backupCatalog.worlds.length ? backupCatalog.worlds.map((w, idx) => `
+                <label class="cv-sub-item" title="${escapeHtml(w.name)}">
+                  <input type="checkbox" class="cv-item-cb" data-cat="worlds" data-idx="${idx}" ${w.checked ? "checked" : ""} />
+                  <span>${escapeHtml(w.name)}</span>
+                  ${w.isBound ? `<span style="font-size:10px;opacity:0.6;margin-left:auto;" title="已被角色卡关联">角色关联</span>` : ""}
+                </label>
+              `).join("") : `<div style="opacity:0.6;font-size:12px;">暂无独立世界书</div>`}
+            </div>
           </div>
         </div>
 
@@ -1932,7 +1884,18 @@ async function renderBackupCenterView() {
                 <span class="cv-pill cv-batch-btn" data-cat="themes" data-val="0" style="padding:2px 8px;font-size:11px;">全不选</span>
               </div>
             </div>
-            <div class="cv-sub-grid">${themeGridHtml}</div>
+            <div class="cv-sub-grid">
+              <label class="cv-sub-item" style="grid-column:1 / -1;border-color:var(--cv-accent);">
+                <input type="checkbox" id="cv-cb-custom-css" ${backupCatalog.includeCustomCss ? "checked" : ""} />
+                <span><b>全局自定义美化 CSS 与界面参数</b></span>
+              </label>
+              ${backupCatalog.themes.map((t, idx) => `
+                <label class="cv-sub-item" title="${escapeHtml(t.name)}">
+                  <input type="checkbox" class="cv-item-cb" data-cat="themes" data-idx="${idx}" ${t.checked ? "checked" : ""} />
+                  <span>${escapeHtml(t.name)}</span>
+                </label>
+              `).join("")}
+            </div>
           </div>
         </div>
 
@@ -1957,7 +1920,14 @@ async function renderBackupCenterView() {
                 <span class="cv-pill cv-batch-btn" data-cat="presets" data-val="0" style="padding:2px 8px;font-size:11px;">全不选</span>
               </div>
             </div>
-            <div class="cv-sub-grid">${presetGridHtml}</div>
+            <div class="cv-sub-grid">
+              ${backupCatalog.presets.length ? backupCatalog.presets.map((p, idx) => `
+                <label class="cv-sub-item" title="${escapeHtml(p.name)}">
+                  <input type="checkbox" class="cv-item-cb" data-cat="presets" data-idx="${idx}" ${p.checked ? "checked" : ""} />
+                  <span>${escapeHtml(p.name)}</span>
+                </label>
+              `).join("") : `<div style="opacity:0.6;font-size:12px;">将默认导出当前全局采样与对话预设参数</div>`}
+            </div>
           </div>
         </div>
 
@@ -1982,7 +1952,20 @@ async function renderBackupCenterView() {
                 <span class="cv-pill cv-batch-btn" data-cat="extensions" data-val="0" style="padding:2px 8px;font-size:11px;">全不选</span>
               </div>
             </div>
-            <div style="max-height:240px;overflow-y:auto;">${extRowsHtml}</div>
+            <div style="max-height:240px;overflow-y:auto;">
+              ${backupCatalog.extensions.length ? backupCatalog.extensions.map((ext, idx) => `
+                <div class="cv-ext-row">
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                    <label style="display:flex;align-items:center;gap:8px;font-weight:600;font-size:12.5px;cursor:pointer;">
+                      <input type="checkbox" class="cv-item-cb" data-cat="extensions" data-idx="${idx}" ${ext.checked ? "checked" : ""} />
+                      <span>${escapeHtml(ext.displayName)}</span>
+                    </label>
+                    <span style="font-size:11px;opacity:0.65;">${ext.url ? "已识别 Git 地址" : "未检测到远程地址"}</span>
+                  </div>
+                  <input type="text" class="cv-input-field cv-ext-url-input" data-idx="${idx}" data-extname="${escapeHtml(ext.displayName)}" placeholder="GitHub 仓库地址 (如 https://github.com/作者/插件名)" value="${escapeHtml(ext.url)}" />
+                </div>
+              `).join("") : `<div style="opacity:0.6;font-size:12px;">未检测到第三方插件</div>`}
+            </div>
           </div>
         </div>
 
@@ -2074,6 +2057,15 @@ async function renderBackupCenterView() {
         backupCatalog.characters.forEach((c, idx) => {
             c.checked = Boolean(c.hasChatHistory);
             $body.find(`.cv-item-cb[data-cat="characters"][data-idx="${idx}"]`).prop("checked", c.checked);
+        });
+        updateBadges();
+    });
+
+    // 世界书专属筛选：仅勾选全局/独立世界书（自动取消关联角色世界书）
+    $("#cv-btn-only-global-worlds").on("click", () => {
+        backupCatalog.worlds.forEach((w, idx) => {
+            w.checked = !w.isBound;
+            $body.find(`.cv-item-cb[data-cat="worlds"][data-idx="${idx}"]`).prop("checked", w.checked);
         });
         updateBadges();
     });
@@ -2174,7 +2166,6 @@ async function renderBackupCenterView() {
     });
 }
 
-// 本地单文件打包函数
 async function buildSelectiveBackupPackage(onProgress) {
     const settings = getSettings();
     const pack = {
@@ -2285,12 +2276,8 @@ async function buildSelectiveBackupPackage(onProgress) {
         onProgress("正在打包插件下载清单与配置...");
         const filteredExtSettings = {};
         for (const ext of selectedExts) {
-            if (extension_settings[ext.displayName]) {
-                filteredExtSettings[ext.displayName] = extension_settings[ext.displayName];
-            }
-            if (extension_settings[ext.id]) {
-                filteredExtSettings[ext.id] = extension_settings[ext.id];
-            }
+            if (extension_settings[ext.displayName]) filteredExtSettings[ext.displayName] = extension_settings[ext.displayName];
+            if (extension_settings[ext.id]) filteredExtSettings[ext.id] = extension_settings[ext.id];
         }
         pack.modules.extensions = {
             installList: selectedExts.map((e) => ({
@@ -2306,7 +2293,6 @@ async function buildSelectiveBackupPackage(onProgress) {
     return pack;
 }
 
-// 通用恢复执行器
 async function restoreFromBackupPackage(pack, onProgress) {
     if (!pack || !pack.modules) throw new Error("无效的备份文件格式");
     const mods = pack.modules;
@@ -2462,9 +2448,6 @@ async function restoreFromBackupPackage(pack, onProgress) {
     setTimeout(() => location.reload(), 1800);
 }
 
-/* =========================================================
-   GitHub 真·增量云同步引擎 (分文件比对 Hash + 可选镜像清理)
-   ========================================================= */
 async function uploadIncrementalToGitHub(onProgress) {
     const settings = getSettings();
     const token = $("#cv-gh-token").val()?.trim() || settings.ghToken;
@@ -2483,7 +2466,6 @@ async function uploadIncrementalToGitHub(onProgress) {
 
     onProgress("正在连接 GitHub 仓库并读取云端增量索引...");
 
-    // 1. 获取默认分支与最新 Commit
     const repoRes = await fetch(`https://api.github.com/repos/${repo}`, { headers: ghHeaders });
     if (!repoRes.ok) throw new Error(`无法访问仓库 ${repo} (HTTP ${repoRes.status})`);
     const repoInfo = await repoRes.json();
@@ -2494,7 +2476,6 @@ async function uploadIncrementalToGitHub(onProgress) {
     const refData = await refRes.json();
     const latestCommitSha = refData.object.sha;
 
-    // 2. 读取云端现有的 manifest.json (记录了已上传文件的路径与指纹 hash)
     let remoteManifest = { version: "1.0.0", files: {} };
     try {
         const mfRes = await fetch(`https://api.github.com/repos/${repo}/contents/vault_backup/manifest.json?ref=${branch}`, {
@@ -2506,7 +2487,6 @@ async function uploadIncrementalToGitHub(onProgress) {
         }
     } catch (_) {}
 
-    // 3. 构建本地目标文件清单 (path -> contentString)
     const localFiles = new Map();
     const selectedChars = backupCatalog.characters.filter((c) => c.checked);
     const autoBoundWorldNames = new Set();
@@ -2575,7 +2555,6 @@ async function uploadIncrementalToGitHub(onProgress) {
         );
     }
 
-    // 世界书独立文件
     const targetWorldNames = new Set([
         ...backupCatalog.worlds.filter((w) => w.checked).map((w) => w.name),
         ...autoBoundWorldNames,
@@ -2595,7 +2574,6 @@ async function uploadIncrementalToGitHub(onProgress) {
         } catch (_) {}
     }
 
-    // 美化主题
     const selectedThemes = backupCatalog.themes.filter((t) => t.checked);
     if (selectedThemes.length > 0 || backupCatalog.includeCustomCss) {
         const raw = backupCatalog.rawSettingsSnapshot || {};
@@ -2611,7 +2589,6 @@ async function uploadIncrementalToGitHub(onProgress) {
         );
     }
 
-    // 对话预设
     const selectedPresets = backupCatalog.presets.filter((p) => p.checked);
     if (selectedPresets.length > 0) {
         const raw = backupCatalog.rawSettingsSnapshot || {};
@@ -2624,7 +2601,6 @@ async function uploadIncrementalToGitHub(onProgress) {
         );
     }
 
-    // 第三方插件
     const selectedExts = backupCatalog.extensions.filter((e) => e.checked);
     if (selectedExts.length > 0) {
         const filteredExtSettings = {};
@@ -2642,7 +2618,6 @@ async function uploadIncrementalToGitHub(onProgress) {
         );
     }
 
-    // 4. 增量比对：找出新增/修改的文件，以及需要镜像删除的文件
     const changedEntries = [];
     const newManifestFiles = { ...remoteManifest.files };
 
@@ -2658,7 +2633,6 @@ async function uploadIncrementalToGitHub(onProgress) {
         for (const remotePath of Object.keys(remoteManifest.files)) {
             if (localFiles.has(remotePath)) continue;
 
-            // 如果该云端文件属于某个角色旗下的聊天档位，仅当本次勾选了该角色时才执行镜像清理
             if (remotePath.startsWith("vault_backup/chats/")) {
                 const parts = remotePath.split("/");
                 const charKey = parts[2];
@@ -2679,7 +2653,6 @@ async function uploadIncrementalToGitHub(onProgress) {
         return;
     }
 
-    // 5. 仅为有变动的文件创建 Git Blob
     const treeItems = [];
     for (let i = 0; i < changedEntries.length; i++) {
         const item = changedEntries[i];
@@ -2701,7 +2674,6 @@ async function uploadIncrementalToGitHub(onProgress) {
         newManifestFiles[item.path] = { hash: item.hash, sha: blobData.sha, updatedAt: Date.now() };
     }
 
-    // 处理镜像删除项（在 Git Tree 中将 sha 设为 null 即可从分支移除该文件）
     for (const delPath of deletedPaths) {
         treeItems.push({
             path: delPath,
@@ -2712,7 +2684,6 @@ async function uploadIncrementalToGitHub(onProgress) {
         delete newManifestFiles[delPath];
     }
 
-    // 更新云端 manifest.json
     const updatedManifestStr = JSON.stringify({
         version: "1.0.0",
         timestamp: Date.now(),
@@ -2732,7 +2703,6 @@ async function uploadIncrementalToGitHub(onProgress) {
         sha: mfBlobData.sha,
     });
 
-    // 6. 提交 Git Tree 与 Commit
     onProgress("正在合并云端版本树...");
     const treeRes = await fetch(`https://api.github.com/repos/${repo}/git/trees`, {
         method: "POST",
@@ -2769,7 +2739,6 @@ async function uploadIncrementalToGitHub(onProgress) {
     if (window.toastr) toastr.success(summaryMsg);
 }
 
-// 从 GitHub 增量目录结构完整恢复（同时兼容旧单体文件）
 async function restoreIncrementalFromGitHub(onProgress) {
     const settings = getSettings();
     const token = $("#cv-gh-token").val()?.trim() || settings.ghToken;
@@ -2784,7 +2753,6 @@ async function restoreIncrementalFromGitHub(onProgress) {
         headers: rawHeaders,
     });
 
-    // 若未找到增量目录，回退检查是否有单文件包 st_vault_backup.json
     if (!mfRes.ok) {
         const singleRes = await fetch(`https://api.github.com/repos/${repo}/contents/st_vault_backup.json`, {
             headers: rawHeaders,
@@ -2810,7 +2778,6 @@ async function restoreIncrementalFromGitHub(onProgress) {
 
     const charMap = new Map();
 
-    // 批量拉取云端增量文件并组装还原
     for (let i = 0; i < filePaths.length; i++) {
         const path = filePaths[i];
         onProgress(`正在从云端拉取数据 (${i + 1}/${filePaths.length}): ${path.split("/").pop()}...`);
